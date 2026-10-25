@@ -126,12 +126,16 @@ part Bar {
             //  The drag is followed by a zone that stays still, under the chips: a drag reaches every zone that was
             //  under the press, and one that moves itself (a chip following the pointer) loses it at the first jump.
             zone box blay_area { from: mbx - 8 * pu, mby - 8 * pu; size: 426 * pu, 104 * pu; active: bar_fm < 0.5 }     // the small bar and the tray, not Reset
-            on drag blay_area { bdx = ((pointer.x - tx.pnl) - mbx) / pu; bdy = ((pointer.y - ty.set) - mby) / pu; emit bar_lay_drag }
+            on drag blay_area { bdx = ((pointer.x - tx.pnl) - mbx) / pu; bdy = ((pointer.y - ty.set) - mby) / pu; bsx_to = clamp(bsx_to + if(bdrag >= 0 and bdy < 44 and bdx > 380, 14, if(bdrag >= 0 and bdy < 44 and bdx < 30, -14, 0)), 0, max(0, brow_w - 410)); emit bar_lay_drag }
+            //  More pieces than the small bar holds: it scrolls sideways, with the wheel, or by itself while a chip is dragged against one of its ends.
+            on scroll blay_area { bsx_to = clamp(bsx - wheel * 40, 0, max(0, brow_w - 410)) }
+            box { from: mbx + 14 * pu + bsx / max(brow_w, 1) * 382 * pu, mby + 42 * pu; size: 382 * pu * 410 / max(brow_w, 410), 2 * pu; corner: 1 * pu; color: ink; opacity: if(brow_w > 411, 30%, 0%) }
             //  The chips' zones, apart from their drawing: pressing one takes it.
             repeat i in 0..9 {
-                let zx = mbx + if(bdrag == i, bdx - bgx, bcx.$i) * pu
+                let rx = bcx.$i - if(bcy.$i < 30, bsx, 0)                       // where it is in the small bar, scrolled (the tray does not scroll)
+                let zx = mbx + if(bdrag == i, bdx - bgx, rx) * pu
                 let zy = mby + if(bdrag == i, bdy - bgy, bcy.$i) * pu
-                zone box bchip.$i { from: zx, zy; size: bcw.$i * pu, 28 * pu; corner: 9 * pu; cursor: if(bchip.$i.pressed > 0.5, grabbing, grab); active: bar_fm < 0.5 }
+                zone box bchip.$i { from: zx, zy; size: bcw.$i * pu, 28 * pu; corner: 9 * pu; cursor: if(bchip.$i.pressed > 0.5, grabbing, grab); active: bar_fm < 0.5 and (bdrag == i or (rx + bcw.$i > 4 and rx < 406)) }
                 on press bchip.$i { bgx = ((pointer.x - tx.pnl) - zx) / pu; bgy = ((pointer.y - ty.set) - zy) / pu; bdx = ((pointer.x - tx.pnl) - mbx) / pu; bdy = ((pointer.y - ty.set) - mby) / pu; bdrag = i; emit bar_lay_grab }
                 on release bchip.$i { emit bar_lay_drop }
             }
@@ -140,7 +144,8 @@ part Bar {
                 let dragging = bdrag == i
               group {
                 show: (pass == 0 and not dragging) or (pass == 1 and dragging)
-                let chx = mbx + if(dragging, bdx - bgx, bcx.$i) * pu     // the chip's top-left and size
+                let chx = mbx + if(dragging, bdx - bgx, bcx.$i - if(bcy.$i < 30, bsx, 0)) * pu     // the chip's top-left and size
+                clip box { from: if(dragging, -10000, mbx), if(dragging, -10000, mby); size: if(dragging, 30000, 410 * pu), if(dragging, 30000, 88 * pu); corner: 12 * pu }      // (cut at the small bar's ends while it is scrolled; the dragged one is not)
                 let chy = mby + if(dragging, bdy - bgy, bcy.$i) * pu
                 let chw = bcw.$i * pu
                 let chh = 28 * pu

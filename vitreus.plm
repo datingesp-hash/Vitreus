@@ -648,6 +648,8 @@ scene Vitreus {
     fact bgx = 0                    // where in the chip it was taken
     fact bgy = 0
     fact bdrop_tray = false         // the dragged chip would go to the hidden tray
+    fact brow_w = 410               // how long the editor's bar row is (the logic says): longer than the small bar's 410, it scrolls sideways
+    fact bsx_to = 0                 // how far it is scrolled (the wheel, or a chip dragged against an end)
     fact btray_n = 0                // how many pieces are hidden
     event bar_lay_grab ->
     event bar_lay_drag ->
@@ -1550,6 +1552,8 @@ scene Vitreus {
     follow rcn = if(rec_on, 1, 0)
     prop pvn = 0 ~calm                // the privacy lights' slots, the same way
     follow pvn = if(priv_mic, 1, 0) + if(priv_cam, 1, 0) + if(priv_scr and not rec_on, 1, 0)
+    prop bsx = 0 ~quick
+    follow bsx = clamp(bsx_to, 0, max(0, brow_w - 410))
     repeat i in 0..9 {
         prop bcx.$i = 0 ~quick
         prop bcy.$i = 4 ~quick

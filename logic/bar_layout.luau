@@ -60,6 +60,7 @@ return function()
             end
             x = x + w + GAP
         end
+        fact.brow_w = x - GAP + PAD          -- how long the row is: past BAR_W the small bar scrolls sideways (`bsx`)
         x = PAD
         for _, k in ipairs(tray) do
             local w = (type(k) == "table") and k.w or CHIP_W[k]
@@ -75,6 +76,11 @@ return function()
         fact.bdrop_tray = drag ~= nil and drag.to_tray or false
     end
 
+    -- How far the small bar is scrolled sideways (the scene clamps it the same way).
+    local function scrolled()
+        return math.max(0, math.min(tonumber(fact.bsx_to) or 0, (tonumber(fact.brow_w) or BAR_W) - BAR_W))
+    end
+
     -- Where the dragged chip would land, from the pointer: the tray if it is over it (never the gear), else the
     -- place in the bar among the chips whose middles it has passed.
     local function aim()
@@ -82,7 +88,7 @@ return function()
         local px, py = fact.bdx or 0, fact.bdy or 0
         drag.to_tray = py > (ROW_BAR + 28 + ROW_TRAY) / 2 and drag.key ~= "set"
         if drag.to_tray then return end
-        local cx = px - (fact.bgx or 0) + CHIP_W[drag.key] / 2     -- the dragged chip's middle
+        local cx = px + scrolled() - (fact.bgx or 0) + CHIP_W[drag.key] / 2     -- the dragged chip's middle, in the row's own place (it may be scrolled)
         local slot = 0
         for _, k in ipairs(L.order) do
             if k ~= drag.key and not L.hidden[k] then
@@ -114,7 +120,8 @@ return function()
         if drag.to_tray ~= before_tray or drag.slot ~= before_slot then place() end
         -- the chip itself: its spring follows the pointer, so that letting go it glides from there to its place
         local c = "bc." .. INDEX[drag.key]
-        fact[c .. ".x"] = (fact.bdx or 0) - (fact.bgx or 0)
+        local on_row = ((fact.bdy or 0) - (fact.bgy or 0)) < 30
+        fact[c .. ".x"] = (fact.bdx or 0) - (fact.bgx or 0) + (on_row and scrolled() or 0)     -- (in the row's own place, so letting go there it glides from under the pointer)
         fact[c .. ".y"] = (fact.bdy or 0) - (fact.bgy or 0)
     end)
     on("bar_lay_drop", function()
