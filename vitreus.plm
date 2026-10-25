@@ -4046,7 +4046,7 @@ scene Vitreus {
             image t.icon { at: 0, 0; size: floor(18 * bu + 0.5), floor(18 * bu + 0.5); opacity: (82% + 18% * touch.hover) * bs.ax }
         }
         zone box touch { at: 9 * bu, 9 * bu; size: 24 * bu, 30 * bu; cursor: pointer; active: bs.ax > 0.5; label: t.name }
-        on press touch { ax_scr = screen.index; ax_sw = screen.width; ax_sh = screen.height; emit adk_go(t.index) }
+        on press touch { ax_scr = screen.index; ax_sw = screen.width; ax_sh = screen.height; emit adk_go(t.index); panel = none }
     }
 
     //  A pinned app in the corner dock. Pressed and let go it starts; pressed and pulled (more than a few pixels) it takes the whole dock with it, which settles in
@@ -4326,7 +4326,9 @@ scene Vitreus {
     //  The add-on drawer: out of the add-on pill (the corner dock's twin, in the other corner), the glass drawn here and the content by the add-on's own scene, which is told
     //  where to draw (`ax_r*`, below). `ax_cur` is the add-on in the pill that holds it (logic/addons.luau).
     fact ax_cur = -1
-    fact ax_open = false                                   // the drawer is out: like the Desk it stays until its X (or its icon) shuts it, and no other panel closes it
+    fact ax_open = false                                   // the drawer is out: like the Desk it stays until its X (or its icon) shuts it, and no other panel closes it (on the Island it is one of the bar's panels: below)
+    fact ax_chime = 0                                      // counts the drawer's openings, for the panel sound (vitreus.luau: the logic opens it, and a fact the logic sets is not heard)
+    on change ax_open while ax_open { ax_chime = ax_chime + 1 }
     fact ax_scr = 0                                        // the monitor it is on
     fact ax_rsz = false                                    // a corner is held: the panel is being resized (the content waits, as while it is pulled)
     fact ax_rk = -1
@@ -4413,9 +4415,11 @@ scene Vitreus {
     //  Click away. The surface is the whole screen (its input region is only what has a zone, so the rest lets clicks through), and this
     //  zone, declared before everything else so that everything else wins over it, closes the panel on a press anywhere that is not
     //  the panel or the bar. A second surface for this would take Escape away from the panel, so it is done here.
-    zone box away_z { at: screen.width / 2, screen.height / 2; size: screen.width, screen.height; active: (panel != none and panel != volume and panel != notif) or wp_picker_open or ov_open or dash_open }
-    on press away_z { panel = none; wp_picker_open = false; ov_open = false; dash_open = false }
-    on press right away_z { panel = none; wp_picker_open = false; ov_open = false; dash_open = false }
+    //  An add-on's panel out of the Island (`axb`) is one of the bar's panels: a press away shuts it too, and so does another panel opening.
+    zone box away_z { at: screen.width / 2, screen.height / 2; size: screen.width, screen.height; active: (panel != none and panel != volume and panel != notif) or wp_picker_open or ov_open or dash_open or (ax_open and axb > 0.5) }
+    on press away_z { panel = none; wp_picker_open = false; ov_open = false; dash_open = false; ax_open = ax_open and axb < 0.5 }
+    on press right away_z { panel = none; wp_picker_open = false; ov_open = false; dash_open = false; ax_open = ax_open and axb < 0.5 }
+    on change panel while panel != none and panel != volume and panel != notif and axb > 0.5 { ax_open = false }
     //  The marks are laid out along one line with the SAME empty space between every neighbouring pair, whatever their sizes: each one has a slot as long
     //  as itself (a dot, a larger square if it has windows, or the pill while it is the active one, and in between while it morphs), and the slots follow
     //  each other `ws.g` apart, the whole row centred on its place. `ws.cN` is where slot N's middle is, from the row's middle.
