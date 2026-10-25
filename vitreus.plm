@@ -4420,6 +4420,7 @@ scene Vitreus {
     on press away_z { panel = none; wp_picker_open = false; ov_open = false; dash_open = false; ax_open = ax_open and axb < 0.5 }
     on press right away_z { panel = none; wp_picker_open = false; ov_open = false; dash_open = false; ax_open = ax_open and axb < 0.5 }
     on change panel while panel != none and panel != volume and panel != notif and axb > 0.5 { ax_open = false }
+    on change ax_open while ax_open and axb > 0.5 { panel = none }       // (and it shuts the bar's panel however it opens: its icon, or a key with `ax_toggle`)
     //  The marks are laid out along one line with the SAME empty space between every neighbouring pair, whatever their sizes: each one has a slot as long
     //  as itself (a dot, a larger square if it has windows, or the pill while it is the active one, and in between while it morphs), and the slots follow
     //  each other `ws.g` apart, the whole row centred on its place. `ws.cN` is where slot N's middle is, from the row's middle.
