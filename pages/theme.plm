@@ -127,7 +127,7 @@ part Theme {
             PPillOutline(spx + 98 * pu, tpw.y + 11 * pu, 56 * pu, 18 * pu, 9 * pu, tpw_ch_hit.hover, clamp(3 * (10% + 10% * tpw_ch_hit.hover), 0, 1), pu)
             box { at: spx + 98 * pu, tpw.y + 11 * pu; size: 56 * pu, 18 * pu; corner: 9 * pu; stroke: 1.2 * pu; color: mint; opacity: 55% + 30% * tpw_ch_hit.hover }
             group { scale: rs; pivot: floor(spx + 98 * pu + 0.5), floor(tpw.y + 11 * pu + 0.5); text "Change" { at: floor(spx + 98 * pu + 0.5), floor(tpw.y + 11 * pu + 0.5); anchor: center; align: center; size: 12.5; weight: 700; color: mint; family: "Space Grotesk" } }
-            zone box tpw_ch_hit { at: spx + 98 * pu, tpw.y + 11 * pu; size: 60 * pu, 22 * pu; corner: 11 * pu; cursor: pointer; label: "Choose the wallpaper for this theme"; active: set_page == pg_theme and not tpw_open and tpw.vis }
+            zone box tpw_ch_hit { at: spx + 98 * pu, tpw.y + 11 * pu; size: 56 * pu, 18 * pu; corner: 9 * pu; cursor: pointer; label: "Choose the wallpaper for this theme"; active: set_page == pg_theme and not tpw_open and tpw.vis }
             on press tpw_ch_hit { tpw_open = true; font_dd_open = false; emit tpw_choose }
             SettingsSwitch(spx + 200 * pu, tpw.y, tpw_pill, tpw_hit.pressed, tpw_hit.hover, mint)
             zone box tpw_hit { at: spx + 181 * pu, tpw.y; size: 46 * pu, 30 * pu; cursor: pointer; label: "Pin the wallpaper to this theme"; active: set_page == pg_theme and not tpw_open and tpw.vis }

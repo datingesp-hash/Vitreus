@@ -5,16 +5,23 @@
 --   The widgets: the clock, the system monitor, the calendar and the reminders (their own scenes, asked and told over their sockets, as Settings >
 --   Widgets and the desktop editor do), and the audio visualiser (the bottom edge, Vitreus's own `fw_on`). The webcam is left out on purpose: a
 --   theme switch never turns a camera on. Sticky notes are what is written on them, not a widget to place.
---   Kept in theme-widgets.json in the data folder: { [theme id] = { [scene] = { [fact] = value }, fw_on = bool } }.
+--   Kept in theme-widgets.json in the data folder: { [theme id] = { [scene] = { [fact or text] = value }, fw_on = bool } }.
+--   A widget's monitor is kept by its name (`mon_name`, `cal_mon_name`, `rem_mon_name`). A pinned monitor that is not plugged in when the theme is
+--   chosen is left out: each widget only takes a name it has among its monitors, so the widget stays on the monitor it is on, at its pinned cell (on
+--   that monitor's grid), shown or hidden as pinned. Plugged in again, the next time the theme is chosen it goes back there.
+--   What is kept is brought up to date when the widgets change (the desktop editor closed, a widget switched or sent to another monitor from Settings >
+--   Widgets, the launcher or the editor's tiles) and when the theme is left: nothing runs while nothing changes.
 -- `w`: what vitreus.luau lends it, as functions (see CLAUDE.md): theme() the theme in use, its id and name; start(scene dir) starts a widget's scene.
 return function(w)
     local FILE = "theme-widgets.json"
-    -- Each scene, and the facts that say whether it is shown and where (written in this order: the place first, then shown).
+    -- Each scene, and the facts (and texts: the monitors' names) that say whether it is shown and where, written in this order: the monitor, the place,
+    -- then shown.
     local WIDGETS = {
-        { scene = "desktopclock", shown = { "shown" }, facts = { "where", "gx", "gy", "mon", "shown" } },
-        { scene = "desktopsysmon", shown = { "shown" }, facts = { "where", "gx", "gy", "mon", "shown" } },
-        { scene = "desktopcards", shown = { "cal_shown", "rem_shown" }, facts = { "cal_gx", "cal_gy", "cal_mon", "rem_gx", "rem_gy", "rem_mon", "cal_shown", "rem_shown" } },
+        { scene = "desktopclock", shown = { "shown" }, facts = { "mon_name", "where", "gx", "gy", "shown" } },
+        { scene = "desktopsysmon", shown = { "shown" }, facts = { "mon_name", "where", "gx", "gy", "shown" } },
+        { scene = "desktopcards", shown = { "cal_shown", "rem_shown" }, facts = { "cal_mon_name", "cal_gx", "cal_gy", "rem_mon_name", "rem_gx", "rem_gy", "cal_shown", "rem_shown" } },
     }
+    local TEXTS = { mon_name = true, cal_mon_name = true, rem_mon_name = true }
     local pins = {}
     local last = nil                 -- the theme the widgets were last put up for (what is kept when it is left)
 
@@ -115,7 +122,11 @@ return function(w)
                 for _, k in ipairs(wd.shown) do if s[k] == true then want = true end end
                 local cmds = {}
                 for _, k in ipairs(wd.facts) do
-                    if s[k] ~= nil then cmds[#cmds + 1] = "fact " .. k .. " " .. tostring(s[k]) end
+                    if TEXTS[k] then
+                        if type(s[k]) == "string" and s[k] ~= "" then cmds[#cmds + 1] = "text " .. k .. " " .. s[k] end       -- (a name the widget has not got is ignored by it)
+                    elseif s[k] ~= nil then
+                        cmds[#cmds + 1] = "fact " .. k .. " " .. tostring(s[k])
+                    end
                 end
                 local tries = 0
                 local function go()
@@ -158,15 +169,24 @@ return function(w)
         end
     end)
 
-    -- While a theme has its widgets pinned, they are looked at now and then and kept as they are (a widget moved, shown or hidden from the desktop
-    -- editor, Settings > Widgets or the launcher), so what is kept is how the theme was left. Not in the seconds after a theme switch, when the widgets
-    -- are being put back.
+    -- When the widgets change, the theme in use keeps them as they are now: once, three seconds after the last change (a widget being started takes about
+    -- two and a half). Not in the seconds after a theme switch, when the widgets are being put back. The changes: the desktop editor closed
+    -- (`widgets_changed`, from desktopedit: what was moved or switched there), and the switches and monitors of Settings > Widgets, the launcher and the
+    -- editor's tiles, which all come through Vitreus.
     local quiet_until = 0
-    every(10000, function()
-        local id = last
-        if not id or not pins[id] or os.time() < quiet_until then return end
-        snapshot(pins[id], function(snap) if last == id and pins[id] and os.time() >= quiet_until and not same(snap, pins[id]) then pins[id] = snap; save(); show() end end)
-    end)
+    local due = 0
+    local function changed()
+        due = due + 1
+        local mine = due
+        after(3000, function()
+            local id = last
+            if mine ~= due or not id or not pins[id] or os.time() < quiet_until then return end
+            snapshot(pins[id], function(snap) if last == id and pins[id] and not same(snap, pins[id]) then pins[id] = snap; save(); show() end end)
+        end)
+    end
+    for _, ev in ipairs({ "widgets_changed", "dclock_toggle", "dsys_toggle", "fw_toggle", "ck_toggle", "sy_toggle", "ck_mon_set", "sy_mon_set" }) do
+        on(ev, changed)
+    end
 
     -- A card on the Theme page: the theme being left keeps its widgets as they are (if it has them pinned: asked at once, before the widgets reload
     -- with the new palette), then the new one's are put back once they are back (as `push_look` tells them the look again, a moment later).

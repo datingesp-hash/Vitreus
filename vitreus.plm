@@ -834,7 +834,7 @@ scene Vitreus {
     fact twg_on = false
     text twg_sub = ""
     event twg_toggle ->
-    text tpw_sub = ""
+    event widgets_changed ->         // the desktop editor closed (desktopedit says so): a theme with its widgets pinned keeps them as they were left
     text tpw_path = ""
     image tpw_img = from tpw_path, 260, 146
     text tpw_title = ""

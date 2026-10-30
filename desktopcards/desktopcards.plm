@@ -114,6 +114,7 @@ scene DesktopCards {
     fact cal_gx = -1           // the cell of its top left corner (-1: the default one)
     fact cal_gy = -1
     fact cal_mon = 0           // which copy of the scene draws it (the logic keeps it)
+    text cal_mon_name = ""     // that monitor's name: set from outside (Settings > Theme > Pin widgets), a name it has not got is ignored
     fact cal_dragging = false
     prop cal_dg = 0 ~quick
     follow cal_dg = if(cal_dragging, 1, 0)
@@ -176,6 +177,7 @@ scene DesktopCards {
     fact rem_gx = -1           // the cell of its top left corner (-1: the default one)
     fact rem_gy = -1
     fact rem_mon = 0           // which copy of the scene draws it (the logic keeps it)
+    text rem_mon_name = ""     // (as the calendar's)
     fact rem_dragging = false
     prop rem_dg = 0 ~quick
     follow rem_dg = if(rem_dragging, 1, 0)
