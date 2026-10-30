@@ -70,7 +70,7 @@ return function(w)
 
     -- The widgets as they are now: each scene is asked for its facts (one line each). A scene that does not answer has nothing shown, unless `prev`
     -- (the theme's last snapshot) has it: a widget's scene reloads when the theme rewrites the palette, and one caught reloading keeps what it had.
-    local function snapshot(prev, done)
+    local function snapshot(prev, done, quick)
         local snap = { fw_on = fw() }
         local left = #WIDGETS
         for _, wd in ipairs(WIDGETS) do
@@ -81,7 +81,7 @@ return function(w)
                 say(wd.scene, cmds, function(out, code)
                     -- "? the render does not answer": the scene is busy (reloading with a new palette, or drawing a heavy frame); asked again a few times
                     local busy = code == 0 and (out == nil or out:find("?", 1, true) ~= nil)
-                    if busy and tries < 4 then tries = tries + 1; after(700, ask) return end
+                    if busy and not quick and tries < 4 then tries = tries + 1; after(700, ask) return end
                     local s = {}
                     if code == 0 and not busy then
                         local i = 0
@@ -123,11 +123,10 @@ return function(w)
                         if code == 0 and (out or ""):find("?", 1, true) and tries < 4 then tries = tries + 1; after(700, go) return end     -- busy: again in a moment
                         if code == 0 then
                             -- a widget that is running slides to its place: `glide` first, the place once the slower spring has taken over, and back
-                            say(wd.scene, { "fact glide true" }, function()
-                                after(450, function()
-                                    say(wd.scene, cmds)
-                                    after(2600, function() say(wd.scene, { "fact glide false" }) end)
-                                end)
+                            local all = { "fact glide true" }       -- (first, in the same message: the slower spring takes over before the place changes)
+                            for _, c in ipairs(cmds) do all[#all + 1] = c end
+                            say(wd.scene, all, function()
+                                after(2600, function() say(wd.scene, { "fact glide false" }) end)
                             end)
                         elseif want then
                             w.start(wd.scene)
@@ -178,14 +177,21 @@ return function(w)
         show()
         if not id or id == from then return end
         quiet_until = os.time() + 8
+        -- at once: the theme being left is looked at first (asked once, no waiting on a busy widget: one that does not answer keeps what it had),
+        -- then the new one's widgets set off; and once more a few seconds later, for a widget that was reloading with the new palette the first time
+        local function arrive()
+            if not pins[id] then return end
+            restore(pins[id])
+            after(4000, function() if last == id and pins[id] then restore(pins[id]) end end)
+        end
         if from and pins[from] then
             local keep = from
-            snapshot(pins[keep], function(snap) if pins[keep] then pins[keep] = snap; save() end end)
-        end
-        if pins[id] then
-            -- twice: a widget still reloading with the new palette when the first comes misses it
-            after(1800, function() if last == id and pins[id] then restore(pins[id]) end end)
-            after(4500, function() if last == id and pins[id] then restore(pins[id]) end end)
+            snapshot(pins[keep], function(snap)
+                if pins[keep] then pins[keep] = snap; save() end
+                if last == id then arrive() end
+            end, true)
+        else
+            arrive()
         end
     end)
     on("themes_refresh", function() after(800, show) end)

@@ -138,7 +138,7 @@ scene DesktopCards {
     //  Settings > Theme > Pin widgets: while a theme puts the widgets back (`glide`, said by Vitreus), what is drawn slides to its new cell on a slower
     //  spring instead of jumping to it.
     fact glide = false
-    prop glp = 0 ~calm
+    prop glp = 0 ~0ms                    // (at once: the slower spring is already where the widget is, so taking it over shows nothing)
     follow glp = if(glide, 1, 0)
     prop cal_gsx = 0 ~gentle
     prop cal_gsy = 0 ~gentle
