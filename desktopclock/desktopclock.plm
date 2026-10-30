@@ -218,6 +218,9 @@ scene DesktopClock {
     zone box edz { from: if(dragging, 0, zx), if(dragging, 0, zy); size: if(dragging, scw, 2 * (hw + pad)), if(dragging, sch, 2 * (hh + pad)); corner: 16; cursor: pointer; active: edit and shown and (here > 0.5 or dragging); label: "Move clock" }
     on press edz { pcx = mox + gl + (ex0 + fw / 2) * gw; pcy = moy + gt + (ey0 + fh / 2) * gh; dcx = pcx; dcy = pcy; zpx = fx; zpy = fy; dragging = true }
     on drag edz { dcx = pcx + drag.dx; dcy = pcy + drag.dy }
+    //  A right click does nothing here, on purpose: a scene that never names the right button is closed by one (pleamar's way out of a prototype with no
+    //  keyboard), and the keeper starts it again a moment later, out of Edit mode: the widget went away and came back stuck.
+    on press right edz { }
     on change dcx { mon = tmon; gx = clamp(floor((dcx - tox - gl) / tgw - tfw / 2 + 0.5), 0, gnx - tfw); gy = clamp(floor((dcy - toy - gt) / tgh - tfh / 2 + 0.5), 0, gny - tfh) }
     on change dcy { mon = tmon; gx = clamp(floor((dcx - tox - gl) / tgw - tfw / 2 + 0.5), 0, gnx - tfw); gy = clamp(floor((dcy - toy - gt) / tgh - tfh / 2 + 0.5), 0, gny - tfh) }
     on release edz { dragging = false; mon = tmon; gx = clamp(floor((dcx - tox - gl) / tgw - tfw / 2 + 0.5), 0, gnx - tfw); gy = clamp(floor((dcy - toy - gt) / tgh - tfh / 2 + 0.5), 0, gny - tfh) }   // (the rules above read the frame before: once more, now that it is still)
