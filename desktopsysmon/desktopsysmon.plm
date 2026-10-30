@@ -141,9 +141,18 @@ scene DesktopSysmon {
     prop erx = 0 ~quick
     prop ery = 0 ~quick
     follow erx = if(gx < 0, ex0, gx)      // (one for all the copies, so it must not depend on this monitor's size: `ex` clamps it)
+    //  Settings > Theme > Pin widgets: while a theme puts the widgets back (`glide`, said by Vitreus), what is drawn slides to its new cell on a slower
+    //  spring instead of jumping to it.
+    fact glide = false
+    prop glp = 0 ~calm
+    follow glp = if(glide, 1, 0)
+    prop gsx = 0 ~gentle
+    prop gsy = 0 ~gentle
+    follow gsx = if(gx < 0, ex0, gx)
+    follow gsy = if(gy < 0, ey0, gy)
     follow ery = if(gy < 0, ey0, gy)
-    let ex = clamp(mix(ex0, erx, edp), 0, gnx - fw)
-    let ey = clamp(mix(ey0, ery, edp), 0, gny - fh)
+    let ex = clamp(mix(mix(ex0, erx, edp), gsx, glp), 0, gnx - fw)
+    let ey = clamp(mix(mix(ey0, ery, edp), gsy, glp), 0, gny - fh)
     //  Where the card's top left corner is: against the grid's edge, or in the middle of its cells, and in between it moves from one to the other.
     //  What is drawn is 340 wide from x 30 and about 210 tall from y 8 inside the card's 400 x 280, so against an edge of the grid it is that, and not the card, that touches the margin.
     let cxm = gl + (ex + fw / 2) * gw - 200

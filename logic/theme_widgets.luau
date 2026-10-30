@@ -76,25 +76,32 @@ return function(w)
         for _, wd in ipairs(WIDGETS) do
             local cmds = {}
             for _, k in ipairs(wd.facts) do cmds[#cmds + 1] = "get " .. k end
-            say(wd.scene, cmds, function(out, code)
-                local s = {}
-                local whole = code == 0 and out ~= nil and not out:find("?", 1, true)       -- "? the render does not answer": the scene is reloading
-                if whole then
-                    local i = 0
-                    for line in (out .. "\n"):gmatch("([^\n]*)\n") do
-                        i = i + 1
-                        local k = wd.facts[i]
-                        if not k then break end
-                        local v = value(line)
-                        if v ~= "" and not tostring(v):match("^%?") then s[k] = v end
+            local tries = 0
+            local function ask()
+                say(wd.scene, cmds, function(out, code)
+                    -- "? the render does not answer": the scene is busy (reloading with a new palette, or drawing a heavy frame); asked again a few times
+                    local busy = code == 0 and (out == nil or out:find("?", 1, true) ~= nil)
+                    if busy and tries < 4 then tries = tries + 1; after(700, ask) return end
+                    local s = {}
+                    if code == 0 and not busy then
+                        local i = 0
+                        for line in (out .. "\n"):gmatch("([^\n]*)\n") do
+                            i = i + 1
+                            local k = wd.facts[i]
+                            if not k then break end
+                            local v = value(line)
+                            if v ~= "" then s[k] = v end
+                        end
+                    elseif prev and type(prev[wd.scene]) == "table" then
+                        s = prev[wd.scene]        -- not running, or never answered: what it had (a scene caught restarting keeps its place)
                     end
-                end
-                if not whole and prev and type(prev[wd.scene]) == "table" then s = prev[wd.scene] end
-                for _, k in ipairs(wd.shown) do if s[k] == nil then s[k] = false end end
-                snap[wd.scene] = s
-                left = left - 1
-                if left == 0 then done(snap) end
-            end)
+                    for _, k in ipairs(wd.shown) do if s[k] == nil then s[k] = false end end
+                    snap[wd.scene] = s
+                    left = left - 1
+                    if left == 0 then done(snap) end
+                end)
+            end
+            ask()
         end
     end
 
@@ -110,14 +117,25 @@ return function(w)
                 for _, k in ipairs(wd.facts) do
                     if s[k] ~= nil then cmds[#cmds + 1] = "fact " .. k .. " " .. tostring(s[k]) end
                 end
-                say(wd.scene, { "get " .. wd.shown[1] }, function(_, code)
-                    if code == 0 then
-                        say(wd.scene, cmds)
-                    elseif want then
-                        w.start(wd.scene)
-                        after(2500, function() say(wd.scene, cmds) end)
-                    end
-                end)
+                local tries = 0
+                local function go()
+                    say(wd.scene, { "get " .. wd.shown[1] }, function(out, code)
+                        if code == 0 and (out or ""):find("?", 1, true) and tries < 4 then tries = tries + 1; after(700, go) return end     -- busy: again in a moment
+                        if code == 0 then
+                            -- a widget that is running slides to its place: `glide` first, the place once the slower spring has taken over, and back
+                            say(wd.scene, { "fact glide true" }, function()
+                                after(450, function()
+                                    say(wd.scene, cmds)
+                                    after(2600, function() say(wd.scene, { "fact glide false" }) end)
+                                end)
+                            end)
+                        elseif want then
+                            w.start(wd.scene)
+                            after(2500, function() say(wd.scene, cmds) end)
+                        end
+                    end)
+                end
+                go()
             end
         end
         if type(snap.fw_on) == "boolean" and snap.fw_on ~= fw() then say("vitreus", { "emit fw_toggle" }) end

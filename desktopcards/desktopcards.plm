@@ -135,9 +135,18 @@ scene DesktopCards {
     prop cal_erx = 0 ~quick
     prop cal_ery = 0 ~quick
     follow cal_erx = if(cal_gx < 0, 0, cal_gx)
+    //  Settings > Theme > Pin widgets: while a theme puts the widgets back (`glide`, said by Vitreus), what is drawn slides to its new cell on a slower
+    //  spring instead of jumping to it.
+    fact glide = false
+    prop glp = 0 ~calm
+    follow glp = if(glide, 1, 0)
+    prop cal_gsx = 0 ~gentle
+    prop cal_gsy = 0 ~gentle
+    follow cal_gsx = if(cal_gx < 0, 0, cal_gx)
+    follow cal_gsy = if(cal_gy < 0, 0, cal_gy)
     follow cal_ery = if(cal_gy < 0, 0, cal_gy)
-    let cal_ex = clamp(mix(cal_gx0, cal_erx, edp), 0, gnx - cal_fw)
-    let cal_ey = clamp(mix(cal_gy0, cal_ery, edp), 0, gny - cal_fh)
+    let cal_ex = clamp(mix(mix(cal_gx0, cal_erx, edp), cal_gsx, glp), 0, gnx - cal_fw)
+    let cal_ey = clamp(mix(mix(cal_gy0, cal_ery, edp), cal_gsy, glp), 0, gny - cal_fh)
     let cal_x = gl + cal_ex * gw + 3          // the card, a little inside its cells
     let cal_y = gt + cal_ey * gh + 3
     let cal_w = cal_fw * gw - 6
@@ -185,9 +194,13 @@ scene DesktopCards {
     prop rem_erx = 0 ~quick
     prop rem_ery = 0 ~quick
     follow rem_erx = if(rem_gx < 0, 22, rem_gx)
+    prop rem_gsx = 0 ~gentle              // (the Pin widgets slide, as the calendar's)
+    prop rem_gsy = 0 ~gentle
+    follow rem_gsx = if(rem_gx < 0, 22, rem_gx)
+    follow rem_gsy = if(rem_gy < 0, 0, rem_gy)
     follow rem_ery = if(rem_gy < 0, 0, rem_gy)
-    let rem_ex = clamp(mix(rem_gx0, rem_erx, edp), 0, gnx - rem_fw)
-    let rem_ey = clamp(mix(rem_gy0, rem_ery, edp), 0, gny - rem_fh)
+    let rem_ex = clamp(mix(mix(rem_gx0, rem_erx, edp), rem_gsx, glp), 0, gnx - rem_fw)
+    let rem_ey = clamp(mix(mix(rem_gy0, rem_ery, edp), rem_gsy, glp), 0, gny - rem_fh)
     let rem_x = gl + rem_ex * gw + 3          // the card, a little inside its cells
     let rem_y = gt + rem_ey * gh + 3
     let rem_w = rem_fw * gw - 6
