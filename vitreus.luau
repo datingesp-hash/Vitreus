@@ -3978,16 +3978,18 @@ end
 
 local function wp_show_page()
     if wh_hook.active() then return end           -- (the gallery is showing Wallhaven's results)
-    local rows, sel = {}, -1
+    local rows, sel, ask = {}, -1, -1
     for i = 1, WP_PER_PAGE do
         local f = wp_view[wp_page * WP_PER_PAGE + i]
         if not f then break end
         local t = crop_path(f, "t")
         rows[i] = { thumb = wp_made[t] == true and t or (wpv.is(f) and "" or f) }
         if f == wp_cur then sel = i - 1 end
+        if wp_delq and wp_delq.asked == f then ask = i - 1 end
     end
     model.wps = rows
     fact.wp_sel = sel
+    fact.wp_ask = ask
     text.wp_pager = string.format("%d / %d", wp_page + 1, wp_pages())
 end
 
@@ -4238,6 +4240,31 @@ on("wp_pick", function(i)
     if wh_hook.active() then wh_hook.pick(i) return end
     local f = wp_view[wp_page * WP_PER_PAGE + i + 1]
     if f then wp_apply(f) end
+end)
+-- The bin in a gallery thumbnail's corner (not Wallhaven's results, nor the wallpaper in use: the scene does not offer it there). The first press asks, and the
+-- thumbnail says so for 4 s; the second sends the picture to the trash (`gio trash`, so it can be put back; without it, into removed-wallpapers/ in the data
+-- folder), and the folder is listed again. (`wp_delq` is a global table: this file is at Luau's limit of locals.)
+wp_delq = { asked = nil }
+on("wp_del", function(i)
+    if wh_hook.active() then return end
+    local f = wp_view[wp_page * WP_PER_PAGE + (tonumber(i) or -1) + 1]
+    if not f or f == wp_cur then return end
+    if wp_delq.asked ~= f then
+        wp_delq.asked = f
+        wp_show_page()
+        after(4000, function() if wp_delq.asked == f then wp_delq.asked = nil; wp_show_page() end end)
+        return
+    end
+    wp_delq.asked = nil
+    run("gio", { "trash", f }, function(_, code)
+        if code == 0 then wp_load() return end
+        with_dirs(function(d)
+            local dest = d.data .. "/removed-wallpapers"
+            run("mkdir", { "-p", dest }, function()
+                run("mv", { "-f", f, dest .. "/" }, function() wp_load() end)
+            end)
+        end)
+    end)
 end)
 on("wp_prev", function()
     if wh_hook.active() then wh_hook.prev() return end
