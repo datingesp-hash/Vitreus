@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# vitreus-monitor-watch: when a monitor is plugged in, switched on, unplugged or switched off, start Vitreus's scenes again a few seconds later,
+# so that each of their per-monitor copies is on the monitor it belongs to.
+#
+# Why: pleamar gives a scene's copies (`screens: each`) to the monitors in the order the compositor listed them when the scene started, and
+# does not hand them out again when that order changes. Started with a monitor off (or before it woke up), a copy can end up on the wrong
+# monitor, or on two: the bar and the desktop widgets show on both screens, and the bar's menus stop opening. A scene started afresh has them
+# right, which is why `pkill`ing it mends it. This does that by itself, once things have been quiet for a few seconds.
+#
+# Hyprland only (its event socket). Started from ~/.config/pleamar/autostart: `vitreus-monitor-watch`. The lock screen is never touched.
+[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] || exit 0
+command -v socat > /dev/null || { echo "vitreus-monitor-watch: socat is needed" >&2; exit 1; }
+export PATH="$HOME/.local/bin:$PATH"
+sock="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock"
+shell="$HOME/.config/pleamar/shells/vitreus"
+QUIET=4          # seconds with no monitor event before acting (a monitor waking up says several things)
+GAP=20           # at least this long between two restarts (bin/vitreus-keep gives up on a scene stopped five times in a row within 30 s)
+last=-100
+
+restart() {
+    local wait=$((last + GAP - SECONDS))
+    [ "$wait" -gt 0 ] && sleep "$wait"
+    last=$SECONDS
+    echo "vitreus-monitor-watch: monitors changed, starting Vitreus's scenes again"
+    pleamar --say vitreus quit > /dev/null 2>&1 || pkill -f "^pleamar --scene $shell/vitreus.plm"
+    pkill -f "^pleamar --scene $shell/desktop"                         # the desktop widgets and the desktop editor (their keepers start them again)
+    pkill -f "^pleamar --scene $shell/addons/"                         # the add-ons that ship with Vitreus
+    pkill -f "^pleamar --scene $HOME/.config/pleamar/vitreus-addons/"  # and your own
+}
+
+while true; do
+    socat -U - "UNIX-CONNECT:$sock" 2> /dev/null | {
+        pending=0
+        while true; do
+            if IFS= read -r -t "$QUIET" line; then
+                case "$line" in monitoradded* | monitorremoved*) pending=1 ;; esac
+            elif [ $? -gt 128 ]; then                                    # nothing new for $QUIET seconds
+                if [ "$pending" = 1 ]; then pending=0; restart; fi
+            else
+                break                                                    # the socket closed (Hyprland restarting): connect again
+            fi
+        done
+    }
+    sleep 2
+done
