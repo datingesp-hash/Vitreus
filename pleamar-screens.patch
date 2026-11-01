@@ -1,0 +1,107 @@
+From 3523ba328b382aed03ada09263c28f436cf03e39 Mon Sep 17 00:00:00 2001
+From: datingesp-hash <datingesp@gmail.com>
+Date: Sun, 1 Nov 2026 22:40:30 +0100
+Subject: [PATCH] =?UTF-8?q?screens:=20each=20=E2=80=94=20a=20copy=20moves?=
+ =?UTF-8?q?=20when=20its=20monitor's=20number=20changes,=20instead=20of=20?=
+ =?UTF-8?q?being=20on=20two?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The copies of a surface with `screens: each` are handed out by number: copy k on
+the k-th monitor the compositor lists. That order changes when a monitor comes or
+goes: one switched on after the session started (or woken from standby, which
+some monitors report as unplugged) is listed again, last, and the others move up.
+Each monitor was then given the copy of its new number and kept the one of its
+old number: the same copy on two monitors. Seen in Vitreus (three 1080p monitors,
+DP-1 off at boot and switched on later): the log shows the first placement
+(surface 0 on DP-1, 1 on HDMI-A-1, 2 on HDMI-A-2) and, when DP-1 woke, a second
+one (3 on HDMI-A-1 copy 0, 4 on HDMI-A-2 copy 1, 5 on DP-1 copy 2) with nothing
+taken away; `hyprctl layers` shows two pleamar layers per process on each HDMI
+monitor and one on DP-1, and a widget's `describe` lists `main (screen 2)` twice.
+The bar and the desktop widgets showed twice and the panels opened on the wrong
+monitor until the scenes were started again.
+
+Now `place_on` first takes away the copies this monitor's number no longer gives
+it, and when a monitor comes or goes every monitor is given again what its number
+gives it (`place_on_all`). The copy's state lives in the render, so it just shows
+on its new monitor. `screens: all` and named monitors are unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/platform/wayland.rs | 36 +++++++++++++++++++++++++++++++++++-
+ 1 file changed, 35 insertions(+), 1 deletion(-)
+
+diff --git a/src/platform/wayland.rs b/src/platform/wayland.rs
+index 557617b..b7a81a4 100644
+--- a/src/platform/wayland.rs
++++ b/src/platform/wayland.rs
+@@ -1019,6 +1019,7 @@ impl State {
+             }
+         }
+         lock_face_for_new_monitor(output, &name, number, mhz);
++        self.drop_moved_copies(output, number);
+         for which in 0..self.wanted.len() {
+             // The lock one isn't placed: it's engaged, when the scene says so.
+             if self.wanted[which].lock_screen {
+@@ -1090,6 +1091,37 @@ impl State {
+         }
+     }
+ 
++    /// A copy handed out by number (`screens: each`, copy k on monitor k) that this monitor's number no longer gives it goes away. The monitors
++    /// are numbered in the order the compositor lists them, and that order changes when one comes or goes: one switched on after the session
++    /// started, or woken from standby, is listed again, last, and the others move up. Each was given the copy of its new number, and kept the
++    /// one of its old number too: the same copy on two monitors, so the bar and the desktop widgets showed twice and the panels opened on the
++    /// wrong one, until the program was started again. The copy itself (its springs, its facts) lives on in the render, and shows again where
++    /// its number now is.
++    fn drop_moved_copies(&mut self, output: &wl_output::WlOutput, number: usize) {
++        let moved = |p: &Placed, wanted: &[Surface]| {
++            &p.output == output
++                && matches!(p.role, Role::Layer(_))
++                && wanted.get(p.which).is_some_and(|s| matches!(s.screens, Screens::Number(x) if x != number))
++        };
++        let wanted = &self.wanted;
++        for p in self.placed.iter().filter(|p| moved(p, wanted)) {
++            let _ = self.to_render.send(ToRender::SheetGone(p.id));
++            if let Some(c) = MOVABLE_LAYERS.get() {
++                c.placed.lock().unwrap().retain(|(_, layer, _, _)| layer.wl_surface() != p.role.wl());
++            }
++        }
++        self.placed.retain(|p| !moved(p, wanted));
++    }
++
++    /// Every monitor gets again what its number gives it: when one comes or goes the others' numbers change, and the compositor need not say
++    /// anything else about them.
++    fn place_on_all(&mut self, qh: &QueueHandle<State>, except: Option<&wl_output::WlOutput>) {
++        let all: Vec<wl_output::WlOutput> = self.outputs.outputs().filter(|o| Some(o) != except).collect();
++        for o in &all {
++            self.place_on(o, qh);
++        }
++    }
++
+     fn remove_from(&mut self, output: &wl_output::WlOutput) {
+         OUTPUTS.lock().unwrap().retain(|_, o| o != output);
+         if let Some(c) = LOCKS.get() {
+@@ -2337,6 +2369,7 @@ impl OutputHandler for State {
+     fn new_output(&mut self, _: &Connection, qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
+         outputs_changed(&self.to_render);
+         self.place_on(&output, qh);
++        self.place_on_all(qh, None);
+     }
+     /// What a monitor says about itself (its name, its modes) can arrive after it
+     /// does, and one that came without a name was not given its surfaces: here they
+@@ -2375,9 +2408,10 @@ impl OutputHandler for State {
+             let _ = c.connection.flush();
+         }
+     }
+-    fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, output: wl_output::WlOutput) {
++    fn output_destroyed(&mut self, _: &Connection, qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
+         outputs_changed(&self.to_render);
+         self.remove_from(&output);
++        self.place_on_all(qh, Some(&output));
+     }
+ }
+ 
+-- 
+2.43.0
+
