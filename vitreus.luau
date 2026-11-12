@@ -9,9 +9,9 @@ end)
 ws_urgent = {}
 addon_scenes = {}                          -- the sockets of the running add-ons (logic/addons.luau), told the palette, the bar's room, the look and the weather
 sys.watch("workspaces", function(w)
-    local busy = {}
-    for _, d in ipairs(w.list) do busy[d.id] = d.windows > 0 end
-    for i = 1, 10 do fact["ws." .. i .. ".busy"] = busy[i] or false end
+    local busy, nwin = {}, {}
+    for _, d in ipairs(w.list) do busy[d.id] = d.windows > 0; nwin[d.id] = d.windows end
+    for i = 1, 10 do fact["ws." .. i .. ".busy"] = busy[i] or false; fact["ws." .. i .. ".n"] = nwin[i] or 0 end
     fact["ws.active"] = w.active
     -- No window on the workspace in view (one that is not in the list at all is empty too): see `ws_empty` in the scene.
     local here = false
@@ -150,16 +150,17 @@ function wm_workspaces()
             local shown = tonumber((r[2 + n] or ""):match("%-?[%d.]+"))
             if shown and fact["ws.active"] ~= shown then fact["ws.active"] = shown end
             -- Windows take slots 0 to 5 (`win.count` is only the ones on the shown workspace).
-            local busy = {}
+            local busy, nwin = {}, {}
             for i = 0, 5 do
                 if (r[6 + i] or ""):match("true") then
                     local w = tonumber((r[12 + i] or ""):match("%-?[%d.]+"))
-                    if w then busy[w] = true end
+                    if w then busy[w] = true; nwin[w] = (nwin[w] or 0) + 1 end
                 end
             end
             for k = 1, 10 do
                 local v = busy[k] or false
                 if fact["ws." .. k .. ".busy"] ~= v then fact["ws." .. k .. ".busy"] = v end
+                if fact["ws." .. k .. ".n"] ~= (nwin[k] or 0) then fact["ws." .. k .. ".n"] = nwin[k] or 0 end
             end
             local dn = tonumber((r[18] or ""):match("%-?[%d.]+"))
             if dn then
@@ -190,15 +191,16 @@ function niri_workspaces()
         local want = bar_mon.name
         local mine = false
         if want ~= nil and want ~= "all" then for _, w in ipairs(list) do if w.monitor == want then mine = true end end end      -- (a name that is not plugged in: the focused monitor's)
-        local active, busy = nil, {}
+        local active, busy, nwin = nil, {}, {}
         for _, w in ipairs(list) do
-            if (not mine or w.monitor == want) and (w.windows or 0) > 0 then busy[w.id] = true end
+            if (not mine or w.monitor == want) and (w.windows or 0) > 0 then busy[w.id] = true; nwin[w.id] = w.windows end
             if w.active and ((mine and w.monitor == want) or (not mine and w.focused)) then active = w.id end
         end
         if active and fact["ws.active"] ~= active then fact["ws.active"] = active end
         for k = 1, 10 do
             local v = busy[k] or false
             if fact["ws." .. k .. ".busy"] ~= v then fact["ws." .. k .. ".busy"] = v end
+            if fact["ws." .. k .. ".n"] ~= (nwin[k] or 0) then fact["ws." .. k .. ".n"] = nwin[k] or 0 end
         end
         local empty = not (active and busy[active])
         if fact.ws_empty ~= empty then fact.ws_empty = empty end
@@ -4599,7 +4601,7 @@ wp_load()
 -- lives in the Hyprland section below (it puts its setter in `glass.set_blur`).
 -- `clear` (0 clear glass .. 1 frosted, pleamar's `frost:`) and `auto` (frost only where what is behind is busy) are the glass that bends's own
 -- frost, and only show with `bend`. (There was once a "glass amount" slider, the scene's `glass:`: it overlapped Opacity and the Glass switch, and is always 100 % now.)
-local glass = { opacity = 1, rim = 1, refr = 1, disp = 1, dome = 0, milk = 0, bend = false, live = false, bend_mon = nil, obsidian = false, clear = 1, auto = false, cap_ms = 300, rest = true }
+local glass = { opacity = 1, rim = 1, refr = 1, disp = 1, dome = 0, milk = 0, smoke = 0, bend = false, live = false, bend_mon = nil, obsidian = false, clear = 1, auto = false, cap_ms = 300, rest = true }
 local GLASS_OP_MIN = 0.3
 local glass_save_waiting = false
 
@@ -4623,6 +4625,7 @@ local function glass_refresh()
     fact.glass_disp = glass.disp
     fact.glass_dome = glass.dome
     fact.glass_milk = glass.milk
+    fact.glass_smoke = glass.smoke
     fact.glass_bend = (glass.bend or glass.live) and not glass.game      -- the lens: either switch turns it on (Live bend does not need X-Bend); never in Game Mode
     fact.files_bend = (glass.bend or glass.live) and not glass.game and not glass.hg      -- Files asks for this one as it starts (files.luau)
     fact.glass_x = glass.bend
@@ -4638,6 +4641,7 @@ local function glass_refresh()
     text.glass_disp_text = string.format("%d%%", math.floor(glass.disp * 100 + 0.5))
     text.glass_dome_text = string.format("%d%%", math.floor(glass.dome * 100 + 0.5))
     text.glass_milk_text = string.format("%d%%", math.floor(glass.milk * 100 + 0.5))
+    text.glass_smoke_text = string.format("%d%%", math.floor(glass.smoke * 100 + 0.5))
     text.glass_cap_text = (glass.cap_ms <= 16) and "Every frame" or string.format("%d ms", glass.cap_ms)
 end
 -- The desktop clock and system monitor are scenes of their own: they are told when the glass goes off or on (they ask for it themselves when they start).
@@ -4650,7 +4654,7 @@ function glass.push_obs()
     run("pleamar", { "--say", "files", "fact obs " .. v }, function() end)
     run("pleamar", { "--say", "desktopnotes", "fact obs " .. v }, function() end)
     run("pleamar", { "--say", "files", "fact gop " .. glass.opacity, "fact gbend " .. tostring((glass.bend or glass.live) and not glass.game and not glass.hg), "fact grefr " .. glass.refr, "fact gdisp " .. glass.disp,
-        "fact gclear " .. glass.clear, "fact gdome " .. glass.dome, "fact gmilk " .. glass.milk, "fact grim " .. glass.rim }, function() end)     -- Files wears the same glass
+        "fact gclear " .. glass.clear, "fact gdome " .. glass.dome, "fact gmilk " .. glass.milk, "fact gsmoke " .. glass.smoke, "fact grim " .. glass.rim }, function() end)     -- Files wears the same glass
 end
 -- Game Mode (logic/gamemode.luau) takes the glass away while it is on: the bar and the drawers go flat obsidian (`game_on` in the scene's `obs`) and
 -- nothing bends, so nothing is captured behind them, every frame of a game being "something behind that changed"; and with Hyprland's blur off
@@ -4683,7 +4687,7 @@ local function glass_save_soon()
     glass_save_waiting = true
     after(500, function()
         glass_save_waiting = false
-        pcall(sys.call, "files.write", "glass.json", { opacity = glass.opacity, rim = glass.rim, refr = glass.refr, disp = glass.disp, dome = glass.dome, milk = glass.milk, bend = glass.bend, live = glass.live, bend_mon = glass.bend_mon, obsidian = glass.obsidian, clear = glass.clear, auto = glass.auto, cap_ms = glass.cap_ms, rest = glass.rest })
+        pcall(sys.call, "files.write", "glass.json", { opacity = glass.opacity, rim = glass.rim, refr = glass.refr, disp = glass.disp, dome = glass.dome, milk = glass.milk, smoke = glass.smoke, bend = glass.bend, live = glass.live, bend_mon = glass.bend_mon, obsidian = glass.obsidian, clear = glass.clear, auto = glass.auto, cap_ms = glass.cap_ms, rest = glass.rest })
     end)
 end
 
@@ -4696,6 +4700,7 @@ do
         if type(saved.disp) == "number" then glass.disp = math.max(0, math.min(2.5, saved.disp)) end
         if type(saved.dome) == "number" then glass.dome = math.max(0, math.min(1, saved.dome)) end
         if type(saved.milk) == "number" then glass.milk = math.max(0, math.min(1, saved.milk)) end
+        if type(saved.smoke) == "number" then glass.smoke = math.max(0, math.min(1, saved.smoke)) end
         if type(saved.bend) == "boolean" then glass.bend = saved.bend end
         if type(saved.live) == "boolean" then glass.live = saved.live end
         if type(saved.rest) == "boolean" then glass.rest = saved.rest end
@@ -4728,6 +4733,7 @@ on("glass_cap_set", function(t)
     glass_refresh(); glass_save_soon()
 end)
 on("glass_milk_set", function(t) glass.milk = glass.step(t, 1); glass_refresh(); glass_save_soon() end)
+on("glass_smoke_set", function(t) glass.smoke = glass.step(t, 1); glass_refresh(); glass_save_soon() end)
 on("glass_obs_toggle", function() glass.obsidian = not glass.obsidian; glass_refresh(); glass_save_soon() end)
 on("glass_bend_mon", function(i)
     local name = text["bar_m." .. math.floor(i) .. ".name"]
@@ -6727,6 +6733,7 @@ end
             end)
         end, "system monitor desktop widget card cpu memory gpu network show hide on off" },
         { "Audio visualiser: toggle", "action", function() spawn('pleamar --say vitreus "emit fw_toggle"') end, "audio visualiser visualizer cava spectrum music bars wave equalizer desktop widget show hide on off" },
+        { "Settings: Workspaces", "open", open_settings("pg_ws"), "workspace marks indicators dots pips numbers numerals rings capsule apps icons bar" },
         { "Camera (on the Desk)", "action", function() spawn('pleamar --say vitreus "emit cam_toggle"') end, "webcam camera self view mirror face round window record screen show hide on off" },
         { "Sticky note: new", "action", function() spawn('pleamar --say vitreus "emit sticky_new"') end, "sticky note sticker new add notes desktop paper write" },
         { "Files", "action", function() spawn('PATH="$HOME/.local/bin:$PATH" vitreus-files') end, "files file manager folder folders browse explorer home documents downloads search sonda nautilus" },
@@ -7434,6 +7441,21 @@ do
     require("logic/theme_widgets")({
         theme = function() if not vtheme.loaded then return nil end local t = vtheme.current(); return t.id, t.name end,
         start = function(dir) exec_on_desktop('vitreus-keep "$HOME/.config/pleamar/shells/vitreus/' .. dir .. '/' .. dir .. '.plm"') end,
+-- the workspace marks' look and options (Settings > Bar > Workspaces), and the Apps look's icons: see logic/ws_marks.luau
+require("logic/ws_marks")({
+    icon_for = function(class) return apps_by_class[class] or class end,
+    clients = function(done)
+        run("hyprctl", { "clients" }, function(out, code)
+            if code ~= 0 or not out then return done(nil) end
+            done(parse_clients(out))
+        end)
+    end,
+    where = function()
+        if on_hyprland then return "hypr" elseif on_niri then return "niri" elseif fact.wm_pwm then return "wm" end
+        return nil
+    end,
+    refresh_icons = function() end,
+})
         addons = addons.widgets,
     })
 end
