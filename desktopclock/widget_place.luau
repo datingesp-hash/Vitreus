@@ -320,7 +320,12 @@ return function(w)
     -- Pressed: the ghosts go next door, empty. Let go without carrying it anywhere: they go. And a widget without its monitor, shown on another in Edit mode
     -- and dragged there: that monitor is its own now.
     on("fact:dragging", function(v)
-        if v == true or v == 1 then ghosts_on() return end
+        if v == true or v == 1 then
+            -- pressed again before the last move has settled (`face` still fading in on its new monitor): it is drawn at once, not left invisible
+            if fact.fready ~= true or fact.landed == true then fact.fready = true; fact.landed = false; fact.jump = false end
+            ghosts_on()
+            return
+        end
         if not fact.carry and not fact.landed then ghosts_off(150) end
         if fact.orphan and text.scr ~= "" and not fact.carry then
             cfg.monitor = text.scr
