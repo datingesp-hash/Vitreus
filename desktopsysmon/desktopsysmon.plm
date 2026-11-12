@@ -41,40 +41,55 @@ scene DesktopSysmon {
     text nbn_r = ""
     text nbn_t = ""
     text nbn_b = ""
-    fact es = 0            // while it is dragged: the edge it is over that has a monitor behind it, 1 left, 2 right, 3 top, 4 bottom, 0 none (the logic puts `ghost` there)
-    text gscr = ""         // the monitor `ghost` is on, while part of the dragged card is over it (the logic)
-    fact gox = 0           // how far that monitor is from this one, in the desktop's pixels (the logic)
-    fact goy = 0
-    fact land = 0          // let go at an edge with a monitor behind it (or with its middle over there): which edge (it slides over, and the logic moves it there)
-    fact sliding = false   // sliding over to that monitor: from where it was let go (`sx0`, `sy0`) to its place by the edge it comes in at, in ~0.3 s
+    //  The monitors next door: a `ghost` surface on each side that has one (`gs_l`, `gs_r`, `gs_t`, `gs_b`: its name while the widget is dragged or carried;
+    //  `ox_*`, `oy_*`: how far it is from this one, in the desktop's pixels; `rd_*`: it has faded in). The logic puts them all there, empty, as the widget is
+    //  pressed, so that none is made while it goes over (a layer that appears fades in: that was the flicker, and moving one mid-drag ended the drag).
+    text gs_l = ""
+    text gs_r = ""
+    text gs_t = ""
+    text gs_b = ""
+    fact ox_l = 0
+    fact oy_l = 0
+    fact ox_r = 0
+    fact oy_r = 0
+    fact ox_t = 0
+    fact oy_t = 0
+    fact ox_b = 0
+    fact oy_b = 0
+    fact rd_l = false
+    fact rd_r = false
+    fact rd_t = false
+    fact rd_b = false
+    fact land = 0          // let go over (or at the edge of) a monitor next door: which side, 1 left, 2 right, 3 top, 4 bottom (the logic takes it from there)
+    fact sliding = false   // sliding over to that monitor's edge (when the button cannot be followed): from where it was (`sx0`, `sy0`), in ~0.3 s
     fact sx0 = 0
     fact sy0 = 0
     fact st0 = 0           // `time` when the slide began
     prop time = 0
     spin time by if(sliding, 1, 0)       // (the clock runs only while it slides)
-    fact ppx = 0           // while it is dragged: the pointer where it was pressed, where the drag has it now, and the time before (on this surface)
+    fact ppx = 0           // while it is dragged: the pointer where it was pressed, and where the drag has it now (on this surface)
     fact ppy = 0
     fact pxn = 0
     fact pyn = 0
-    fact pxp = 0
+    fact pxp = 0           // and where the drag had it the time before (how fast it goes: a quick one crosses an edge between two of them)
     fact pyp = 0
-    fact landed = false    // just sent there: `ghost` still shows it until its own surface is up on that monitor (the logic, a moment)
-    //  Carried over: when the drag ends at the monitor's edge (the compositor may let go of it there), the card follows the pointer by itself, on whichever
-    //  of `face` and `ghost` it is over (`cs`: 1 or 2; `cpx`, `cpy` there), until the logic hears the button come up (bin/vitreus-btnwait) and puts it
-    //  in the cell under it (`fgx`, `fgy`, which the scene keeps for it), on that monitor. See desktopclock/widget_place.luau.
+    fact landed = false    // just sent to a monitor next door: that side's ghost (`lside`) shows it there until `face` is up on it (the logic, a moment)
+    fact lside = 0
+    //  Carried: when the compositor lets go of the drag at the edge, the card follows the pointer by itself, the logic saying where the pointer is (`cpx`, `cpy`,
+    //  in this surface's coordinates wherever it is: `hyprctl cursorpos`) and over which monitor (`cs`: 0 this one, 1 to 4 the one on that side), until the
+    //  button comes up (bin/vitreus-btnwait); then it goes into the cell under it (`fgx`, `fgy`, which the scene keeps for it), on that monitor.
     fact carry = false
-    fact cs = 1
+    fact cs = 0
     fact cpx = 0
     fact cpy = 0
     fact kx = 0            // from the pointer to the card, when it was pressed
     fact ky = 0
     fact fgx = 0
     fact fgy = 0
-    fact nocarry = false   // the button cannot be heard: it slides over to the edge instead (the logic says so)
+    fact nocarry = false   // the pointer cannot be followed (no `hyprctl cursorpos`, or no access to the input devices): it slides over to the edge instead
     //  Nothing is drawn on a surface just put on a monitor until it has faded in (the compositor's own animation), and one is taken off only when it draws
-    //  nothing (`fready` for `face`, `gready` for `ghost`; the logic): that was the flicker when it went over.
+    //  nothing: `fready` for `face` (the logic), `rd_*` for the ghosts.
     fact fready = true
-    fact gready = false
     fact dfx = 0           // while it is dragged: from the middle of its cells to the card (the card follows the pointer, the cells come after)
     fact dfy = 0
     fact jump = false      // just gone over to another monitor: drawn at its new cell at once, not slid there by the cells' spring (the logic, a moment)
@@ -224,49 +239,47 @@ scene DesktopSysmon {
     let zx = if(dragging, zpx, cx0) + ox
     let zy = if(dragging, zpy, cy0) + oy
     //  While it is dragged the card follows the pointer (`cxa`, `cya`), and the cells it would take follow under it; let go, it settles into them.
-    //  Where it comes to rest over there, in this surface's coordinates (`gox`, `goy`: how far that monitor is): against the edge it came in by, at the same row
-    //  (or column), as `cx0` and `cy0` put the card at the first or the last cell.
-    let tgx = if(land == 2, gox + gl - 15, if(land == 1, gox + ghost.width - gr - 385, cx0 + gox))
-    let tgy = if(land == 4, goy + gt + 5, if(land == 3, goy + ghost.height - gb - 231, cy0 + goy))
-    //  Sliding over to the monitor next door, it goes from where it was let go to its place there, easing out.
+    //  Sliding over to the edge of the monitor on side `land` (only when the pointer cannot be followed): from where it was to its place there, easing out.
+    let oxs = pick(land, 0, ox_l, ox_r, ox_t, ox_b)
+    let oys = pick(land, 0, oy_l, oy_r, oy_t, oy_b)
+    let wls = pick(land, scw, ghl.width, ghr.width, ght.width, ghb.width)
+    let hls = pick(land, sch, ghl.height, ghr.height, ght.height, ghb.height)
+    let tgx = if(land == 2, oxs + gl - 15, if(land == 1, oxs + wls - gr - 385, cx0 + oxs))
+    let tgy = if(land == 4, oys + gt + 5, if(land == 3, oys + hls - gb - 231, cy0 + oys))
     let stw = clamp((time - st0) / 0.3, 0, 1)
     let ste = 1 - (1 - stw) * (1 - stw) * (1 - stw)
-    //  Carried: under the pointer, on the surface it is over, in this surface's coordinates.
-    let cfx = if(cs == 2, cpx + kx + gox, cpx + kx)
-    let cfy = if(cs == 2, cpy + ky + goy, cpy + ky)
+    //  Carried: under the pointer, in this surface's coordinates.
+    let cfx = cpx + kx
+    let cfy = cpy + ky
     let cxa = if(dragging, dcx + dfx, if(carry, cfx, if(sliding, mix(sx0, tgx, ste), cx0)))
     let cya = if(dragging, dcy + dfy, if(carry, cfy, if(sliding, mix(sy0, tgy, ste), cy0)))
     let rawx = (dcx - gl) / gw - fw / 2
     let rawy = (dcy - gt) / gh - fh / 2
-    //  Part of it over an edge with a monitor behind it (`near`): the logic puts the surface `ghost` on that monitor (`gscr`, `gox`, `goy`), which draws
-    //  the part that is over there, so it slides across. The drag stays this surface's own the whole time (a drag is lost with the surface that took the
-    //  press). Let go with the card's middle over there (`cross`), it lands there (`land`).
-    let near = if(dragging, if(cxa + ox < 0 and nb_l, 1, if(cxa + ox + ow > scw and nb_r, 2, if(cya + oy < 0 and nb_t, 3, if(cya + oy + oh > sch and nb_b, 4, 0)))), 0)
-    on change near { es = near }
+    //  Part of it over an edge with a monitor behind it: that edge glows faintly.
+    let near = if(dragging or carry, if(cxa + ox < 0 and nb_l, 1, if(cxa + ox + ow > scw and nb_r, 2, if(cya + oy < 0 and nb_t, 3, if(cya + oy + oh > sch and nb_b, 4, 0)))), 0)
     let cross = if(cxa + ox + ow / 2 < 0 and nb_l, 1, if(cxa + ox + ow / 2 > scw and nb_r, 2, if(cya + oy + oh / 2 < 0 and nb_t, 3, if(cya + oy + oh / 2 > sch and nb_b, 4, 0))))
-    //  The pointer against an edge with a monitor behind it when the drag ends (48 px, or going fast enough for its next step to be past it): with a mouse
-    //  the drag ends there anyway (the compositor lets go of it as the pointer goes on to the other monitor, and this scene is not told when the button
-    //  is let go there), so reaching the edge is what sends it over.
+    //  The pointer at an edge with a monitor behind it when the drag ends (48 px, or going fast enough for its next step to be past it): the compositor may
+    //  have let go of the drag there as the pointer went on over; and past the edge (`pside`): the drag went on over there and it was let go over that monitor.
     let pxf = pxn + (pxn - pxp)
     let pyf = pyn + (pyn - pyp)
     let tch = if((pxn >= scw - 48 or pxf >= scw) and nb_r, 2, if((pxn <= 48 or pxf <= 0) and nb_l, 1, if((pyn <= 48 or pyf <= 0) and nb_t, 3, if((pyn >= sch - 48 or pyf >= sch) and nb_b, 4, 0))))
-    let goside = if(cross > 0, cross, tch)
-    //  Let go with the pointer past this monitor's edge: the drag went on over there (it does while `ghost` is already on that monitor, as it is from the
-    //  press), so it is let go over the other monitor, in `ghost`'s coordinates there.
-    let outp = if(pxn >= scw or pxn < 0 or pyn >= sch or pyn < 0, 1, 0)
-    //  The cell under the carried card (from its cells' middle, `dfx` away), on the monitor it is over: that one's grid (`ghost` measures it) or this one's.
-    let ngw = (ghost.width - gl - gr) / gnx
-    let ngh = (ghost.height - gt - gb) / gny
+    let pside = if(pxn >= scw and nb_r, 2, if(pxn < 0 and nb_l, 1, if(pyn < 0 and nb_t, 3, if(pyn >= sch and nb_b, 4, 0))))
+    let goside = if(pside > 0, pside, if(cross > 0, cross, tch))
+    //  The cell under the card on the monitor it is over (`cs`): that one's grid (its ghost measures it), or this one's.
+    let cox = pick(cs, 0, ox_l, ox_r, ox_t, ox_b)
+    let coy = pick(cs, 0, oy_l, oy_r, oy_t, oy_b)
+    let ccw = pick(cs, scw, ghl.width, ghr.width, ght.width, ghb.width)
+    let cch = pick(cs, sch, ghl.height, ghr.height, ght.height, ghb.height)
+    let ngw = (ccw - gl - gr) / gnx
+    let ngh = (cch - gt - gb) / gny
     let nfw = clamp(ceil(364 / ngw), 1, gnx)
     let nfh = clamp(ceil(230 / ngh), 1, gny)
-    let dgx = if(cs == 2, clamp(floor((cfx - gox - dfx - gl) / ngw - nfw / 2 + 0.5), 0, gnx - nfw), clamp(floor((cfx - dfx - gl) / gw - fw / 2 + 0.5), 0, gnx - fw))
-    let dgy = if(cs == 2, clamp(floor((cfy - goy - dfy - gt) / ngh - nfh / 2 + 0.5), 0, gny - nfh), clamp(floor((cfy - dfy - gt) / gh - fh / 2 + 0.5), 0, gny - fh))
+    let dgx = clamp(floor((cfx - cox - dfx - gl) / ngw - nfw / 2 + 0.5), 0, gnx - nfw)
+    let dgy = clamp(floor((cfy - coy - dfy - gt) / ngh - nfh / 2 + 0.5), 0, gny - nfh)
     on change dgx while carry { fgx = dgx }
     on change dgy while carry { fgy = dgy }
     on change carry while carry { fgx = dgx; fgy = dgy }
-    on change pointer.x while carry { cpx = pointer.x }
-    on change pointer.y while carry { cpy = pointer.y }
-    //  No way to hear the button (the logic says `nocarry`): from where it is, it slides over to the edge it was carried over.
+    //  The pointer cannot be followed (the logic says `nocarry`): from where it is, it slides over to the edge of the monitor on side `land`.
     on change nocarry while nocarry { sx0 = cxa; sy0 = cya; st0 = time; sliding = true; carry = false; nocarry = false }
     //  Come in from another monitor, it is put inside the grid: the last cell it fits in here.
     on change gx while gx > gnx - fw { gx = gnx - fw }
@@ -386,17 +399,16 @@ scene DesktopSysmon {
         //  (15 frames a second at rest: the graph glides on a 4 s spring after every sample, so it never stops, and at the screen's pace that was a full-screen layer
         //  painted sixty times a second all day. Smooth enough for a graph; full pace while it is dragged or put back.)
         //  While it is dragged the zone is the whole surface (a zone that moved with the card would lose the drag); pleamar keeps the drag going past its edge.
-        zone box edz { from: if(dragging or carry, 0, zx), if(dragging or carry, 0, zy); size: if(dragging or carry, scw, ow), if(dragging or carry, sch, oh); corner: 16; cursor: pointer; active: edit and shown; label: "Move system" }
-        on enter edz { cs = if(carry, 1, cs); cpx = if(carry, pointer.x, cpx); cpy = if(carry, pointer.y, cpy) }
-        on press edz { kx = cx0 - pointer.x; ky = cy0 - pointer.y; cs = 1; ppx = pointer.x; ppy = pointer.y; pxn = pointer.x; pyn = pointer.y; pxp = pointer.x; pyp = pointer.y; pcx = gl + (ex0 + fw / 2) * gw; pcy = gt + (ey0 + fh / 2) * gh; dcx = pcx; dcy = pcy; dfx = cx0 - pcx; dfy = cy0 - pcy; zpx = cx0; zpy = cy0; dragging = true }
+        zone box edz { from: if(dragging, 0, zx), if(dragging, 0, zy); size: if(dragging, scw, ow), if(dragging, sch, oh); corner: 16; cursor: pointer; active: edit and shown; label: "Move system" }
+        on press edz { kx = cx0 - pointer.x; ky = cy0 - pointer.y; ppx = pointer.x; ppy = pointer.y; pxn = pointer.x; pyn = pointer.y; pxp = pointer.x; pyp = pointer.y; pcx = gl + (ex0 + fw / 2) * gw; pcy = gt + (ey0 + fh / 2) * gh; dcx = pcx; dcy = pcy; dfx = cx0 - pcx; dfy = cy0 - pcy; zpx = cx0; zpy = cy0; dragging = true }
         on drag edz { dcx = if(dragging, pcx + drag.dx, dcx); dcy = if(dragging, pcy + drag.dy, dcy); pxp = pxn; pyp = pyn; pxn = if(dragging, ppx + drag.dx, pxn); pyn = if(dragging, ppy + drag.dy, pyn) }
         //  A right click does nothing here, on purpose: a scene that never names the right button is closed by one (pleamar's way out of a prototype with no
         //  keyboard), and the keeper starts it again a moment later, out of Edit mode: the widget went away and came back stuck.
         on press right edz { }
-        //  Let go: into the cell under it here. Over the other monitor, or at the edge (`goside`): `carry` and `land` tell the logic, which listens for the
-        //  button. Let go over there (`outp`), the button is already up: it goes into the cell under it there. At the edge, the drag may have ended because the
-        //  compositor let go of it as the pointer went on over there: it is carried on from there, under the pointer, until the button comes up.
-        on release edz { gx = if(dragging and goside == 0, clamp(floor(rawx + 0.5), 0, gnx - fw), gx); gy = if(dragging and goside == 0, clamp(floor(rawy + 0.5), 0, gny - fh), gy); cpx = if(outp > 0.5, pxn - gox, pxn); cpy = if(outp > 0.5, pyn - goy, pyn); cs = if(outp > 0.5, 2, 1); carry = if(dragging, goside > 0, carry); land = if(dragging, goside, 0); dragging = false; es = 0 }
+        //  Let go: into the cell under it here. Over a monitor next door, or at the edge of one (`goside`): `land` tells the logic, which takes it from where the
+        //  pointer is (`cpx`, `cpy`, and over which monitor, `cs`): let go over there (`pside`), it goes into the cell under it there; at the edge, the drag
+        //  may have ended because the compositor let go of it, and it is carried on under the pointer until the button comes up (`carry`).
+        on release edz { gx = if(dragging and goside == 0, clamp(floor(rawx + 0.5), 0, gnx - fw), gx); gy = if(dragging and goside == 0, clamp(floor(rawy + 0.5), 0, gny - fh), gy); cpx = pxn; cpy = pyn; cs = pside; carry = if(dragging, goside > 0, carry); land = if(dragging, goside, 0); dragging = false }
         group {
             show: fready
             group {
@@ -420,23 +432,50 @@ scene DesktopSysmon {
         }
     }
 
-    //  The monitor next door, while the dragged card is partly over it, and for a moment after it has landed there (until `face` is up on it).
-    //  Before it lands it draws the card where the drag has it, less how far that monitor is (`gox`, `goy`); after, where `face` will.
-    let gcx = if(dragging or carry or sliding, cxa - gox, cx0)
-    let gcy = if(dragging or carry or sliding, cya - goy, cy0)
-    surface ghost {
-        size: full, full; anchor: top_left; margin: 0; level: bottom, top while edit; screens: gscr; reserve: -1; keyboard: none
-        //  While it is carried over here this whole surface hears the pointer (where it is, `cpx`, `cpy`), so the card can follow it.
-        zone box gz { from: 0, 0; size: ghost.width, ghost.height; cursor: pointer; active: carry }
-        on enter gz { cs = if(carry, 2, cs); cpx = if(carry, pointer.x, cpx); cpy = if(carry, pointer.y, cpy) }
-        on press right gz { }
+    //  The monitors next door, one surface a side: while the card is dragged, carried or slid, where it is, less how far that monitor is; once it has landed
+    //  there (`lside`), its cell, where `face` will draw it. Nothing until it has faded in (`rd_*`).
+    surface ghl {
+        size: full, full; anchor: top_left; margin: 0; level: bottom, top while edit; screens: gs_l; reserve: -1; keyboard: none
         group {
-            show: (dragging or carry or sliding or landed) and gready and edp > 0.01 and shown
+            show: rd_l and (dragging or carry or sliding or (landed and lside == 1)) and edp > 0.01 and shown
             opacity: edp
-            box { from: gcx + ox, gcy + oy; size: ow, oh; corner: 16; color: mint; opacity: 7% + 9% * dgp }
-            box { from: gcx + ox, gcy + oy; size: ow, oh; corner: 16; stroke: 1.6; color: mint; opacity: 55% + 45% * dgp }
-            text "System" { at: gcx + ox + 14, gcy + oy + 16; anchor: left center; size: 12; weight: 700; color: mint; family: "Space Grotesk"; shadow: 0, 1, 5, 70% * (1 - pl) }
+            box { from: if(landed, cx0, cxa - ox_l) + ox, if(landed, cy0, cya - oy_l) + oy; size: ow, oh; corner: 16; color: mint; opacity: 7% + 9% * dgp }
+            box { from: if(landed, cx0, cxa - ox_l) + ox, if(landed, cy0, cya - oy_l) + oy; size: ow, oh; corner: 16; stroke: 1.6; color: mint; opacity: 55% + 45% * dgp }
+            text "System" { at: if(landed, cx0, cxa - ox_l) + ox + 14, if(landed, cy0, cya - oy_l) + oy + 16; anchor: left center; size: 12; weight: 700; color: mint; family: "Space Grotesk"; shadow: 0, 1, 5, 70% * (1 - pl) }
         }
-        SysCard(gcx, gcy, (dragging or carry or sliding or landed) and gready)
+        SysCard(if(landed, cx0, cxa - ox_l), if(landed, cy0, cya - oy_l), rd_l and (dragging or carry or sliding or (landed and lside == 1)))
+    }
+    surface ghr {
+        size: full, full; anchor: top_left; margin: 0; level: bottom, top while edit; screens: gs_r; reserve: -1; keyboard: none
+        group {
+            show: rd_r and (dragging or carry or sliding or (landed and lside == 2)) and edp > 0.01 and shown
+            opacity: edp
+            box { from: if(landed, cx0, cxa - ox_r) + ox, if(landed, cy0, cya - oy_r) + oy; size: ow, oh; corner: 16; color: mint; opacity: 7% + 9% * dgp }
+            box { from: if(landed, cx0, cxa - ox_r) + ox, if(landed, cy0, cya - oy_r) + oy; size: ow, oh; corner: 16; stroke: 1.6; color: mint; opacity: 55% + 45% * dgp }
+            text "System" { at: if(landed, cx0, cxa - ox_r) + ox + 14, if(landed, cy0, cya - oy_r) + oy + 16; anchor: left center; size: 12; weight: 700; color: mint; family: "Space Grotesk"; shadow: 0, 1, 5, 70% * (1 - pl) }
+        }
+        SysCard(if(landed, cx0, cxa - ox_r), if(landed, cy0, cya - oy_r), rd_r and (dragging or carry or sliding or (landed and lside == 2)))
+    }
+    surface ght {
+        size: full, full; anchor: top_left; margin: 0; level: bottom, top while edit; screens: gs_t; reserve: -1; keyboard: none
+        group {
+            show: rd_t and (dragging or carry or sliding or (landed and lside == 3)) and edp > 0.01 and shown
+            opacity: edp
+            box { from: if(landed, cx0, cxa - ox_t) + ox, if(landed, cy0, cya - oy_t) + oy; size: ow, oh; corner: 16; color: mint; opacity: 7% + 9% * dgp }
+            box { from: if(landed, cx0, cxa - ox_t) + ox, if(landed, cy0, cya - oy_t) + oy; size: ow, oh; corner: 16; stroke: 1.6; color: mint; opacity: 55% + 45% * dgp }
+            text "System" { at: if(landed, cx0, cxa - ox_t) + ox + 14, if(landed, cy0, cya - oy_t) + oy + 16; anchor: left center; size: 12; weight: 700; color: mint; family: "Space Grotesk"; shadow: 0, 1, 5, 70% * (1 - pl) }
+        }
+        SysCard(if(landed, cx0, cxa - ox_t), if(landed, cy0, cya - oy_t), rd_t and (dragging or carry or sliding or (landed and lside == 3)))
+    }
+    surface ghb {
+        size: full, full; anchor: top_left; margin: 0; level: bottom, top while edit; screens: gs_b; reserve: -1; keyboard: none
+        group {
+            show: rd_b and (dragging or carry or sliding or (landed and lside == 4)) and edp > 0.01 and shown
+            opacity: edp
+            box { from: if(landed, cx0, cxa - ox_b) + ox, if(landed, cy0, cya - oy_b) + oy; size: ow, oh; corner: 16; color: mint; opacity: 7% + 9% * dgp }
+            box { from: if(landed, cx0, cxa - ox_b) + ox, if(landed, cy0, cya - oy_b) + oy; size: ow, oh; corner: 16; stroke: 1.6; color: mint; opacity: 55% + 45% * dgp }
+            text "System" { at: if(landed, cx0, cxa - ox_b) + ox + 14, if(landed, cy0, cya - oy_b) + oy + 16; anchor: left center; size: 12; weight: 700; color: mint; family: "Space Grotesk"; shadow: 0, 1, 5, 70% * (1 - pl) }
+        }
+        SysCard(if(landed, cx0, cxa - ox_b), if(landed, cy0, cya - oy_b), rd_b and (dragging or carry or sliding or (landed and lside == 4)))
     }
 }

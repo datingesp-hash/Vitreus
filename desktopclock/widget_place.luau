@@ -185,59 +185,59 @@ return function(w)
         end
     end)
 
-    -- `ghost`: put on a monitor while it is empty, and drawn on only once it has faded in (`gready`, GFADE later: the compositor fades a layer that
-    -- appears in, ~0.4 s, and out when it goes); taken off only when it draws nothing. Making and unmaking surfaces as the widget went over was the
-    -- flicker; now it is put next door as the widget is pressed, on the side it is more likely to go to, and moved if it heads for another.
+    -- The ghosts: one surface on each side that has a monitor next door (`gs_<side>`), put there empty as the widget is pressed and drawn on only once
+    -- it has faded in (`rd_<side>`, GFADE later: the compositor fades a layer in as it appears, ~0.4 s, and out as it goes); taken off only when they
+    -- draw nothing. None is made or moved while the widget goes over: that was the flicker, and moving one mid-drag ended the drag.
     local GFADE = 450
     local ghost_n = 0
     local function busy() return fact.dragging == true or fact.carry == true or fact.sliding == true or fact.landed == true end
-    local function ghost_on(side)
-        local from, to = find(text.scr), side and nb[side] and find(nb[side])
-        if not from or not to or not from.x or not to.x then return false end
-        if text.gscr == to.name then return true end
+    local function ghosts_on()
+        local from = find(text.scr)
+        if not from or not from.x then return end
         ghost_n = ghost_n + 1
         local mine = ghost_n
-        fact.gready = false
-        fact.gox = to.x - from.x
-        fact.goy = to.y - from.y
-        text.gscr = to.name
-        after(GFADE, function() if mine == ghost_n then fact.gready = true end end)
-        return true
+        for _, side in ipairs(SIDES) do
+            local to = nb[side] and find(nb[side])
+            if to and to.x then
+                if text["gs_" .. side] ~= to.name then
+                    fact["rd_" .. side] = false
+                    fact["ox_" .. side] = to.x - from.x
+                    fact["oy_" .. side] = to.y - from.y
+                    text["gs_" .. side] = to.name
+                end
+            elseif text["gs_" .. side] ~= "" then
+                fact["rd_" .. side] = false
+                text["gs_" .. side] = ""
+            end
+        end
+        after(GFADE, function()
+            if mine ~= ghost_n then return end
+            for _, side in ipairs(SIDES) do if text["gs_" .. side] ~= "" then fact["rd_" .. side] = true end end
+        end)
     end
-    local function ghost_off(delay)
+    local function ghosts_off(delay)
         ghost_n = ghost_n + 1
         local mine = ghost_n
         after(delay, function()
             if mine ~= ghost_n or busy() then return end
-            fact.gready = false
-            text.gscr = ""
+            for _, side in ipairs(SIDES) do
+                fact["rd_" .. side] = false
+                if text["gs_" .. side] ~= "" then text["gs_" .. side] = "" end
+            end
         end)
     end
-    -- The side it is more likely to go to: the edge with a monitor behind it nearest to where it was pressed.
-    local function likely_side()
-        local m = find(text.scr)
-        if not m or not m.w then return nil end
-        local px, py = tonumber(fact.ppx) or 0, tonumber(fact.ppy) or 0
-        local best, dist = nil, math.huge
-        for side, d in pairs({ l = px, r = m.w - px, t = py, b = m.h - py }) do
-            if nb[side] and d < dist then best, dist = side, d end
-        end
-        return best
-    end
-    on("fact:es", function(v)
-        local side = SIDES[math.floor((tonumber(v) or 0) + 0.5)]
-        if side and nb[side] and fact.dragging then ghost_on(side) end
-    end)
 
-    -- It goes to monitor `name`, into cell `gx`, `gy`: `ghost` (on that monitor, faded in) shows it there while `face` is put on that monitor empty
-    -- (`fready` false) and fades in; then, in one go, `face` draws it and `ghost` stops, and `ghost` is taken off, empty.
-    local function arrive(name, gx, gy)
-        local to = find(name)
+    -- It goes to the monitor on `side`, into cell `gx`, `gy`: that side's ghost (already faded in) shows it there (`landed`, `lside`) while `face` is put
+    -- on that monitor empty (`fready` false) and fades in; then, in one go, `face` draws it and the ghost stops, and the ghosts are taken off, empty.
+    local SIDE_N = { l = 1, r = 2, t = 3, b = 4 }
+    local function arrive(side, gx, gy)
+        local to = side and nb[side] and find(nb[side])
         fact.carry = false
         fact.sliding = false
         fact.land = 0
-        if not to then ghost_off(0) return end
+        if not to then ghosts_off(0) return end
         fact.fready = false
+        fact.lside = SIDE_N[side]
         fact.landed = true
         fact.jump = true
         fact.gx = gx
@@ -250,49 +250,78 @@ return function(w)
             fact.fready = true
             fact.landed = false
             fact.jump = false
-            ghost_off(120)
+            ghosts_off(120)
         end)
     end
-    -- Carried over an edge (`land`: which one): the button is listened for (bin/vitreus-btnwait). Let go over the other monitor, it goes there, into the cell
-    -- under it; back over its own, it stays there, in the cell under it. Without a way to hear the button (no access to the input devices), it slides
-    -- over to the edge it was carried over (`nocarry`), as it did before.
+    -- Into the cell under it on the monitor it is over (`cs`: 0 its own, 1 to 4 the one on that side), as the scene works it out (`fgx`, `fgy`).
+    local function drop()
+        local cs = math.floor((tonumber(fact.cs) or 0) + 0.5)
+        if cs >= 1 and cs <= 4 and nb[SIDES[cs]] then
+            arrive(SIDES[cs], fact.fgx, fact.fgy)
+            return
+        end
+        fact.gx = fact.fgx
+        fact.gy = fact.fgy
+        if w.moved then w.moved(fact.gx, fact.gy) end
+        save()
+        fact.carry = false
+        fact.land = 0
+        ghosts_off(150)
+    end
+    -- Carried: where the pointer is, from Hyprland (`hyprctl cursorpos`, the desktop's coordinates), told to the scene in its own (`cpx`, `cpy`) with the
+    -- monitor it is over (`cs`), every 30 ms or so, until the button comes up.
+    local function follow(from)
+        if not fact.carry then return end
+        run("hyprctl", { "cursorpos" }, function(out, code)
+            if not fact.carry then return end
+            local x, y = (out or ""):match("(%-?[%d.]+),%s*(%-?[%d.]+)")
+            x, y = tonumber(x), tonumber(y)
+            if code == 0 and x and y then
+                fact.cpx = x - from.x
+                fact.cpy = y - from.y
+                local over = nil
+                if x >= from.x and x < from.x + from.w and y >= from.y and y < from.y + from.h then over = 0 end
+                for i, side in ipairs(SIDES) do
+                    local m = nb[side] and find(nb[side])
+                    if not over and m and m.x and x >= m.x and x < m.x + m.w and y >= m.y and y < m.y + m.h then over = i end
+                end
+                if over and over ~= fact.cs then fact.cs = over end
+            end
+            after(30, function() follow(from) end)
+        end)
+    end
+    local on_hypr = nil
+    run("printenv", { "HYPRLAND_INSTANCE_SIGNATURE" }, function(out, code) on_hypr = code == 0 and (out or ""):match("%S") ~= nil end)
+
+    -- Let go over a monitor next door, or at its edge (`land`: which side). Let go over there (`cs` already that side): into the cell under it there. At the
+    -- edge, the compositor may have let go of the drag as the pointer went on over: the widget is carried on (the scene's `carry`), following the pointer
+    -- (`follow`), until bin/vitreus-btnwait says the button is up, and then goes into the cell under it, on whichever monitor that is. Where the pointer
+    -- cannot be followed (not Hyprland) or the button cannot be heard (no access to the input devices), it slides over to that monitor's edge.
     local SLIDE_MS = 330
     local ENTRY = { l = { 99, nil }, r = { 0, nil }, t = { nil, 99 }, b = { nil, 0 } }
     on("fact:land", function(v)
         local side = SIDES[math.floor((tonumber(v) or 0) + 0.5)]
-        if not side or not nb[side] then fact.carry = false; fact.land = 0; ghost_off(0) return end
-        ghost_on(side)
+        if not side or not nb[side] then fact.carry = false; fact.land = 0; ghosts_off(0) return end
         local function slide_over()
             fact.nocarry = true
             local e = ENTRY[side]
-            after(SLIDE_MS, function() arrive(nb[side], e[1] or fact.gx, e[2] or fact.gy) end)
+            after(SLIDE_MS, function() arrive(side, e[1] or fact.gx, e[2] or fact.gy) end)
         end
+        if math.floor((tonumber(fact.cs) or 0) + 0.5) > 0 then drop() return end
+        local from = find(text.scr)
+        if not on_hypr or not from or not from.x then slide_over() return end
+        follow(from)
         local ok = pcall(run, "vitreus-btnwait", { "30" }, function(_, code)
             if not fact.carry then return end
-            if code ~= 0 then slide_over() return end
-            if math.floor((tonumber(fact.cs) or 1) + 0.5) == 2 and text.gscr ~= "" then
-                arrive(text.gscr, fact.fgx, fact.fgy)
-            else
-                fact.gx = fact.fgx
-                fact.gy = fact.fgy
-                if w.moved then w.moved(fact.gx, fact.gy) end
-                save()
-                fact.carry = false
-                fact.land = 0
-                ghost_off(150)
-            end
+            if code == 0 then after(70, drop) else slide_over() end      -- (a moment for the last place of the pointer to come in)
         end)
         if not ok then slide_over() end
     end)
-    -- Pressed: `ghost` goes next door, empty, on the likelier side. Let go without carrying it anywhere: it goes. And a widget without its monitor,
-    -- shown on another in Edit mode and dragged there: that monitor is its own now.
+    -- Pressed: the ghosts go next door, empty. Let go without carrying it anywhere: they go. And a widget without its monitor, shown on another in Edit mode
+    -- and dragged there: that monitor is its own now.
     on("fact:dragging", function(v)
-        if v == true or v == 1 then
-            local side = likely_side()
-            if side then ghost_on(side) end
-            return
-        end
-        if not fact.carry then ghost_off(150) end
+        if v == true or v == 1 then ghosts_on() return end
+        if not fact.carry and not fact.landed then ghosts_off(150) end
         if fact.orphan and text.scr ~= "" and not fact.carry then
             cfg.monitor = text.scr
             save()
