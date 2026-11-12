@@ -1,13 +1,16 @@
 -- Which monitor a desktop widget is on: shared by the desktop widgets (desktopclock/, desktopsysmon/: a link to this file in each folder).
 --
--- The widget is one surface (`surface face { screens: scr }`), on one monitor: the one its settings name (`monitor`), or, while that one is not
--- plugged in, the first there is (it goes back when it is plugged in again). It used to be a copy of the whole scene on every monitor, a full-screen
+-- The widget is one surface (`surface face { screens: scr }`), on one monitor: the one its settings name (`monitor`). While that one is not plugged
+-- in the widget is not shown anywhere (it does not move in with another monitor's widgets), and it is back when it is; only in Edit mode is it shown,
+-- on the first monitor and marked as without one (`orphan`), so that a widget whose monitor is gone for good can still be found and placed: dragged
+-- there, that is its monitor from then on. It used to be a copy of the whole scene on every monitor, a full-screen
 -- surface each (~27 MB on the card per 1080p monitor, drawing or not), with the card drawn by one copy and the others empty; and dragging it to
 -- another monitor handed the drag from one copy to another halfway, which is where it got stuck.
 --
--- Now a drag never leaves its surface. To move the widget to another monitor it is pushed against the edge that monitor is behind, in Edit mode
--- (the scene says which edge with `es` while it is pushed there; held there a moment, it goes over and comes in by the opposite edge), or chosen in
--- Settings > Widgets (`text mon_name`, as before).
+-- To move it to another monitor it is dragged over the edge that monitor is behind, in Edit mode, and let go there. While part of it is over that
+-- edge (the scene says which with `es`) a second surface, `ghost`, is put on that monitor (`gscr`, and how far it is, `gox`, `goy`) and draws the part
+-- that is over there, so the widget slides across; the drag stays with the surface that took the press (moving that surface mid-drag ended the drag).
+-- Let go with its middle over there (`land`), it is sent there. Or Settings > Widgets (`text mon_name`). Nothing to hold, nothing to wait for.
 --
 -- The monitors are learnt from `hyprctl monitors` (Hyprland's JSON, or pleamar-wm's text): names, and where they lie, which says which monitor is
 -- behind each edge (`nb_l`, `nb_r`, `nb_t`, `nb_b`, and their names in `nbn_*` for the hint). Where it does not answer (niri without the wrapper),
@@ -47,17 +50,23 @@ return function(w)
         end
     end
 
-    -- Puts it on its monitor, or on the first one while that is not plugged in. Nothing known yet: left as it is. While it is hidden (`shown` false,
-    -- and not in Edit mode) it has no surface at all: a hidden widget kept a full-screen one on the card all the same.
+    -- Puts it on its monitor. Nothing known yet: left as it is. No monitor chosen yet: the first one. Its monitor not plugged in: nowhere, but in Edit
+    -- mode, where it is on the first one, marked (`orphan`). While it is hidden (`shown` false, and not in Edit mode) it has no surface at all: a hidden
+    -- widget kept a full-screen one on the card all the same.
     local hidden = false
+    local function editing() return fact.edit == true or fact.edit == 1 end
     local function place()
-        local m = find(cfg.monitor) or mons[1]
-        if not m then return end
-        if cfg.monitor == "" then cfg.monitor = m.name; save() end
-        local want = hidden and "" or m.name
+        if not mons[1] then return end
+        if cfg.monitor == "" then cfg.monitor = mons[1].name; save() end
+        local m = find(cfg.monitor)
+        local orphan = m == nil
+        if orphan and editing() then m = mons[1] end
+        fact.orphan = orphan
+        text.orph = orphan and (cfg.monitor .. " · not connected") or ""
+        local want = (hidden or not m) and "" or m.name
         local moved = text.scr ~= want and want ~= ""
         if text.scr ~= want then text.scr = want end
-        if text.mon_name ~= m.name then text.mon_name = m.name end
+        if text.mon_name ~= cfg.monitor then text.mon_name = cfg.monitor end       -- (its own monitor, plugged in or not: Settings lights that one)
         neighbours(m)
         if moved and w.placed then w.placed(m.name) end
     end
@@ -148,7 +157,8 @@ return function(w)
         local mine = vis_n
         local off = not (fact.shown == true or fact.shown == 1) and not (fact.edit == true or fact.edit == 1)
         if not off then
-            if hidden then hidden = false; place() end
+            hidden = false
+            place()                 -- (also: in Edit mode a widget without its monitor shows, and it goes when Edit mode ends)
             return
         end
         after(1500, function()
@@ -169,32 +179,63 @@ return function(w)
             save()
             place()
         else
-            text.mon_name = text.scr
+            text.mon_name = cfg.monitor
         end
     end)
 
-    -- Pushed against an edge with a monitor behind it (`es`: 1 left, 2 right, 3 top, 4 bottom, 0 none), and held there a moment: it goes over, and
-    -- comes in by the opposite edge, at the same row (or column). The drag ends here: its surface is now on the other monitor.
-    local push_n = 0
+    -- Part of the dragged widget over an edge with a monitor behind it (`es`: 1 left, 2 right, 3 top, 4 bottom; 0 none): `ghost` goes on that
+    -- monitor. Back off the edge (or let go without landing), it goes away again, a moment later (so that wavering at the edge does not make and
+    -- unmake a surface each frame).
+    local ghost_n = 0
+    local function ghost_off(delay)
+        ghost_n = ghost_n + 1
+        local mine = ghost_n
+        after(delay, function()
+            if mine ~= ghost_n or fact.landed or (tonumber(fact.land) or 0) > 0 then return end
+            if (tonumber(fact.es) or 0) > 0 and fact.dragging then return end
+            text.gscr = ""
+        end)
+    end
     on("fact:es", function(v)
-        push_n = push_n + 1
-        local mine, side = push_n, SIDES[math.floor((tonumber(v) or 0) + 0.5)]
-        if not side or not nb[side] then return end
+        local side = SIDES[math.floor((tonumber(v) or 0) + 0.5)]
+        local from, to = find(text.scr), side and nb[side] and find(nb[side])
+        if not side or not from or not to or not from.x or not to.x then ghost_off(250) return end
+        ghost_n = ghost_n + 1
+        fact.gox = to.x - from.x
+        fact.goy = to.y - from.y
+        if text.gscr ~= to.name then text.gscr = to.name end
+    end)
+    -- Let go with its middle over the other monitor (`land`: the edge it crossed; the scene has already set the cell it lands on, on that monitor's
+    -- grid): it is that monitor's now. `ghost` keeps showing it until `face` is up there (`landed`), and `jump` puts it in its cell at once.
+    on("fact:land", function(v)
+        local side = SIDES[math.floor((tonumber(v) or 0) + 0.5)]
+        local to = side and nb[side] and find(nb[side])
+        if not to then fact.land = 0; ghost_off(0) return end
+        fact.landed = true
+        fact.jump = true
+        cfg.monitor = to.name
+        if w.moved then w.moved(fact.gx, fact.gy) end
+        save()
+        place()
+        fact.land = 0
         after(450, function()
-            if mine ~= push_n or not fact.dragging then return end
-            local to = nb[side]
-            if not find(to) then return end
-            fact.dragging = false
-            fact.es = 0
-            -- the far edge: the scene's rule keeps a cell it cannot take inside the grid (`gx` past the last column comes back to the last it fits in)
-            if side == "l" then fact.gx = 99 elseif side == "r" then fact.gx = 0 end
-            if side == "t" then fact.gy = 99 elseif side == "b" then fact.gy = 0 end
-            cfg.monitor = to
-            if w.moved then w.moved(fact.gx, fact.gy) end
-            save()
-            place()
+            fact.jump = false
+            fact.landed = false
+            text.gscr = ""
         end)
     end)
+    -- Let go without landing: the ghost goes. And a widget without its monitor, shown on another in Edit mode and dragged there: that monitor is its
+    -- own now.
+    on("fact:dragging", function(v)
+        if v == true or v == 1 then return end
+        ghost_off(120)
+        if fact.orphan and text.scr ~= "" and not ((tonumber(fact.land) or 0) > 0) then
+            cfg.monitor = text.scr
+            save()
+            place()
+        end
+    end)
+    -- Leaving Edit mode puts a widget without its monitor away again (and entering it shows it): see `visibility`.
 
     return { refresh = refresh, place = place }
 end
