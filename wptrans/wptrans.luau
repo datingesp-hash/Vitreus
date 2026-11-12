@@ -8,27 +8,15 @@ local counter = 0
 run("printenv", { "HYPRLAND_INSTANCE_SIGNATURE" }, function(out, code) fact.wp_dec = (code == 0 and (out or "") ~= "") and 1 or 0 end)
 run("printenv", { "HOME" }, function(out) home = (out or ""):gsub("%s+$", "") end)
 
--- A dissolve leaves the picture and the shader's work on the card (~115 MB more, for good: emptying `src` does not give it back). A while after the
--- last one the scene starts again, clean: it quits and its keeper starts it again in ~3 s. 35 s, so that it has always been up over the 30 s within
--- which the keeper counts a stop as a quick one (twenty of those and it gives up), and so that picking several wallpapers in a row restarts it once.
-local REFRESH_MS = 35000
-local done_n = 0
-local function refresh_later()
-    done_n = done_n + 1
-    local mine = done_n
-    after(REFRESH_MS, function()
-        if mine ~= done_n or busy then return end
-        run("pleamar", { "--say", "wptrans", "quit" }, function() end)
-    end)
-end
-
 local function finish()
     run("awww", { "img", text.target, "--transition-type", "none" }, function()
         -- awww has to have drawn it before the overlay goes, or the old wallpaper shows for a frame
         after(350, function()
             fact.active = false
             busy = false
-            refresh_later()
+            -- (pleamar 0.8 gives an image's memory back a few seconds after nothing uses it: ~10 MB more than before the dissolve with `src`
+            -- emptied, ~20 with it kept)
+            text.src = ""
         end)
     end)
 end
