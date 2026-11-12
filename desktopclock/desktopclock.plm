@@ -274,36 +274,48 @@ scene DesktopClock {
     let tgy = if(land == 4, oys + gt + hh + 13, if(land == 3, oys + hls - gb - hh - 13, fy + oys))
     let stw = clamp((time - st0) / 0.3, 0, 1)
     let ste = 1 - (1 - stw) * (1 - stw) * (1 - stw)
-    //  Carried: under the pointer, in this surface's coordinates.
-    let cfx = cpx + kx
-    let cfy = cpy + ky
-    let fxa = if(dragging, dcx + dfx, if(carry, cfx, if(sliding, mix(sx0, tgx, ste), fx)))
-    let fya = if(dragging, dcy + dfy, if(carry, cfy, if(sliding, mix(sy0, tgy, ste), fy)))
-    let rawx = (dcx - gl) / gw - fw / 2
-    let rawy = (dcy - gt) / gh - fh / 2
-    //  Part of it over an edge with a monitor behind it: that edge glows faintly.
-    let near = if(dragging or carry, if(fxa - hw < 0 and nb_l, 1, if(fxa + hw > scw and nb_r, 2, if(fya - hh < 0 and nb_t, 3, if(fya + hh > sch and nb_b, 4, 0)))), 0)
-    let cross = if(fxa < 0 and nb_l, 1, if(fxa > scw and nb_r, 2, if(fya < 0 and nb_t, 3, if(fya > sch and nb_b, 4, 0))))
-    //  The pointer at an edge with a monitor behind it when the drag ends (48 px, or going fast enough for its next step to be past it): the compositor may
-    //  have let go of the drag there as the pointer went on over; and past the edge (`pside`): the drag went on over there and it was let go over that monitor.
-    let pxf = pxn + (pxn - pxp)
-    let pyf = pyn + (pyn - pyp)
-    let tch = if((pxn >= scw - 48 or pxf >= scw) and nb_r, 2, if((pxn <= 48 or pxf <= 0) and nb_l, 1, if((pyn <= 48 or pyf <= 0) and nb_t, 3, if((pyn >= sch - 48 or pyf >= sch) and nb_b, 4, 0))))
-    let pside = if(pxn >= scw and nb_r, 2, if(pxn < 0 and nb_l, 1, if(pyn < 0 and nb_t, 3, if(pyn >= sch and nb_b, 4, 0))))
-    let goside = if(pside > 0, pside, if(cross > 0, cross, tch))
-    //  The cell under the face on the monitor it is over (`cs`): that one's grid (its ghost measures it), or this one's.
-    let cox = pick(cs, 0, ox_l, ox_r, ox_t, ox_b)
-    let coy = pick(cs, 0, oy_l, oy_r, oy_t, oy_b)
-    let ccw = pick(cs, scw, ghl.width, ghr.width, ght.width, ghb.width)
-    let cch = pick(cs, sch, ghl.height, ghr.height, ght.height, ghb.height)
+    //  Dragged (or carried), it goes from cell to cell, on a quick spring, as the desktop's other widgets do: where it is seen is where it stays. The cell is
+    //  the one under it on the monitor the pointer is over (`tside`: 0 this one, 1 to 4 the one on that side): past this monitor's edge, it goes on to that
+    //  one's grid, and the spring takes it across the edge (`ghost` surfaces draw the part that is over there).
+    let dside = if(pxn >= scw and nb_r, 2, if(pxn < 0 and nb_l, 1, if(pyn < 0 and nb_t, 3, if(pyn >= sch and nb_b, 4, 0))))
+    let tside = if(carry, cs, if(dragging, dside, 0))
+    let ccx = if(carry, cpx + kx, dcx + dfx) - dfx       // (the middle of the cells under it, freely, in this surface's coordinates)
+    let ccy = if(carry, cpy + ky, dcy + dfy) - dfy
+    let cox = pick(tside, 0, ox_l, ox_r, ox_t, ox_b)
+    let coy = pick(tside, 0, oy_l, oy_r, oy_t, oy_b)
+    let ccw = pick(tside, scw, ghl.width, ghr.width, ght.width, ghb.width)
+    let cch = pick(tside, sch, ghl.height, ghr.height, ght.height, ghb.height)
     let ngw = (ccw - gl - gr) / gnx
     let ngh = (cch - gt - gb) / gny
     let nfw = clamp(ceil(2 * hw / ngw), 1, gnx)
     let nfh = clamp(ceil(2 * hh / ngh), 1, gny)
-    let dgx = clamp(floor((cfx - cox - dfx - gl) / ngw - nfw / 2 + 0.5), 0, gnx - nfw)
-    let dgy = clamp(floor((cfy - coy - dfy - gt) / ngh - nfh / 2 + 0.5), 0, gny - nfh)
-    on change dgx while carry { fgx = dgx }
-    on change dgy while carry { fgy = dgy }
+    let dgx = clamp(floor((ccx - cox - gl) / ngw - nfw / 2 + 0.5), 0, gnx - nfw)
+    let dgy = clamp(floor((ccy - coy - gt) / ngh - nfh / 2 + 0.5), 0, gny - nfh)
+    //  The face's place for that cell (as `fx`, `fy` put it: in the middle of its cells, against the grid's edge at the first or the last one), here.
+    let dex = cox + gl + (dgx + nfw / 2) * ngw
+    let dey = coy + gt + (dgy + nfh / 2) * ngh
+    let tcx = dex + (gl + hw + 13 + cox - dex) * clamp(1 - dgx, 0, 1) + (cox + ccw - gr - hw - 13 - dex) * clamp(dgx + nfw - (gnx - 1), 0, 1)
+    let tcy = dey + (gt + hh + 13 + coy - dey) * clamp(1 - dgy, 0, 1) + (coy + cch - gb - hh - 13 - dey) * clamp(dgy + nfh - (gny - 1), 0, 1)
+    //  (At rest the spring stays on the face, so a drag starts from where it is.)
+    prop dxs = 0 ~quick
+    prop dys = 0 ~quick
+    follow dxs = if(dragging or carry, tcx, fx)
+    follow dys = if(dragging or carry, tcy, fy)
+    let fxa = if(dragging or carry, dxs, if(sliding, mix(sx0, tgx, ste), fx))
+    let fya = if(dragging or carry, dys, if(sliding, mix(sy0, tgy, ste), fy))
+    let rawx = (dcx - gl) / gw - fw / 2
+    let rawy = (dcy - gt) / gh - fh / 2
+    //  Part of it over an edge with a monitor behind it: that edge glows faintly.
+    let near = if(dragging or carry or sliding, if(fxa - hw < 0 and nb_l, 1, if(fxa + hw > scw and nb_r, 2, if(fya - hh < 0 and nb_t, 3, if(fya + hh > sch and nb_b, 4, 0)))), 0)
+    //  The pointer at an edge with a monitor behind it when the drag ends (48 px, or going fast enough for its next step to be past it): the compositor may
+    //  have let go of the drag there as the pointer went on over (it is carried on); and past the edge (`dside`): it was let go over that monitor.
+    let pxf = pxn + (pxn - pxp)
+    let pyf = pyn + (pyn - pyp)
+    let tch = if((pxn >= scw - 48 or pxf >= scw) and nb_r, 2, if((pxn <= 48 or pxf <= 0) and nb_l, 1, if((pyn <= 48 or pyf <= 0) and nb_t, 3, if((pyn >= sch - 48 or pyf >= sch) and nb_b, 4, 0))))
+    let goside = if(dside > 0, dside, tch)
+    //  The cell it is in, for the logic to put it there when it is let go over another monitor (or carried).
+    on change dgx while dragging or carry { fgx = dgx }
+    on change dgy while dragging or carry { fgy = dgy }
     on change carry while carry { fgx = dgx; fgy = dgy }
     //  The pointer cannot be followed (the logic says `nocarry`): from where it is, it slides over to the edge of the monitor on side `land`.
     on change nocarry while nocarry { sx0 = fxa; sy0 = fya; st0 = time; sliding = true; carry = false; nocarry = false }
@@ -327,9 +339,9 @@ scene DesktopClock {
         //  Let go: into the cell under it here. Over a monitor next door, or at the edge of one (`goside`): `land` tells the logic, which takes it from where the
         //  pointer is (`cpx`, `cpy`, and over which monitor, `cs`): let go over there (`pside`), it goes into the cell under it there; at the edge, the drag
         //  may have ended because the compositor let go of it, and it is carried on under the pointer until the button comes up (`carry`).
-        on release edz { gx = if(dragging and goside == 0, clamp(floor(rawx + 0.5), 0, gnx - fw), gx); gy = if(dragging and goside == 0, clamp(floor(rawy + 0.5), 0, gny - fh), gy); cpx = pxn; cpy = pyn; cs = pside; carry = if(dragging, goside > 0, carry); land = if(dragging, goside, 0); dragging = false }
+        on release edz { gx = if(dragging and dside == 0, clamp(floor(rawx + 0.5), 0, gnx - fw), gx); gy = if(dragging and dside == 0, clamp(floor(rawy + 0.5), 0, gny - fh), gy); cpx = pxn; cpy = pyn; cs = dside; carry = if(dragging, goside > 0, carry); land = if(dragging, goside, 0); dragging = false }
         group {
-            show: fready
+            show: fready and not (tside > 0 and near == 0)      // (wholly over the monitor next door: only its ghost draws it)
             group {
                 show: edp > 0.01 and shown
                 opacity: edp
@@ -356,7 +368,7 @@ scene DesktopClock {
     //  has landed there (`lside`), its cell, where `face` will draw it. Nothing until it has faded in (`ready`).
     component ClockGhost(ox: number, oy: number, ready: bool, me: number) {
         group {
-            show: ready and (dragging or carry or sliding or (landed and lside == me))
+            show: ready and ((dragging or carry or sliding) and (tside == me or near == me or land == me) or (landed and lside == me))
             group {
                 show: edp > 0.01 and shown
                 opacity: edp
