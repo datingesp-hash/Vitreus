@@ -7,10 +7,11 @@
 -- surface each (~27 MB on the card per 1080p monitor, drawing or not), with the card drawn by one copy and the others empty; and dragging it to
 -- another monitor handed the drag from one copy to another halfway, which is where it got stuck.
 --
--- To move it to another monitor it is dragged over the edge that monitor is behind, in Edit mode, and let go there. While part of it is over that
--- edge (the scene says which with `es`) a second surface, `ghost`, is put on that monitor (`gscr`, and how far it is, `gox`, `goy`) and draws the part
--- that is over there, so the widget slides across; the drag stays with the surface that took the press (moving that surface mid-drag ended the drag).
--- Let go with its middle over there (`land`), it is sent there. Or Settings > Widgets (`text mon_name`). Nothing to hold, nothing to wait for.
+-- To move it to another monitor it is dragged against the edge that monitor is behind, in Edit mode. While part of it is over that edge (the scene
+-- says which with `es`) a second surface, `ghost`, is put on that monitor (`gscr`, and how far it is, `gox`, `goy`) and draws the part that is over
+-- there. Let go with the pointer at that edge (`land`), it slides over and stays there by that edge. With a mouse the drag ends at the edge anyway:
+-- the compositor lets go of it when the pointer goes on to the other monitor, and the scene is not told when the button comes up there, so a drag
+-- cannot go on across monitors; reaching the edge is the gesture. (Moving `face` itself mid-drag also ended the drag.) Or Settings > Widgets.
 --
 -- The monitors are learnt from `hyprctl monitors` (Hyprland's JSON, or pleamar-wm's text): names, and where they lie, which says which monitor is
 -- behind each edge (`nb_l`, `nb_r`, `nb_t`, `nb_b`, and their names in `nbn_*` for the hint). Where it does not answer (niri without the wrapper),
@@ -205,23 +206,40 @@ return function(w)
         fact.goy = to.y - from.y
         if text.gscr ~= to.name then text.gscr = to.name end
     end)
-    -- Let go with its middle over the other monitor (`land`: the edge it crossed; the scene has already set the cell it lands on, on that monitor's
-    -- grid): it is that monitor's now. `ghost` keeps showing it until `face` is up there (`landed`), and `jump` puts it in its cell at once.
+    -- Let go at an edge with a monitor behind it (`land`: which edge): the scene slides it over (`sliding`, ~0.3 s, drawn by `face` and by `ghost`
+    -- on that monitor), and then it is that monitor's: `face` goes there, at the edge it came in by (`gx`/`gy`, which the scene set), and `ghost`
+    -- keeps showing it until `face` is up there (`landed`); `jump` puts it in its cell at once.
+    local SLIDE_MS = 330
     on("fact:land", function(v)
         local side = SIDES[math.floor((tonumber(v) or 0) + 0.5)]
-        local to = side and nb[side] and find(nb[side])
-        if not to then fact.land = 0; ghost_off(0) return end
-        fact.landed = true
-        fact.jump = true
-        cfg.monitor = to.name
-        if w.moved then w.moved(fact.gx, fact.gy) end
-        save()
-        place()
-        fact.land = 0
-        after(450, function()
-            fact.jump = false
-            fact.landed = false
-            text.gscr = ""
+        local from, to = find(text.scr), side and nb[side] and find(nb[side])
+        if not to or not from or not from.x or not to.x then
+            fact.land = 0
+            fact.sliding = false
+            ghost_off(0)
+            return
+        end
+        ghost_n = ghost_n + 1                 -- (no ghost going away now)
+        fact.gox = to.x - from.x
+        fact.goy = to.y - from.y
+        if text.gscr ~= to.name then text.gscr = to.name end
+        after(SLIDE_MS, function()
+            fact.landed = true
+            fact.jump = true
+            -- the cell by the edge it came in at (99: the last one it fits in; the scene brings it back inside its grid), the row (or column) as it was
+            if side == "l" then fact.gx = 99 elseif side == "r" then fact.gx = 0 end
+            if side == "t" then fact.gy = 99 elseif side == "b" then fact.gy = 0 end
+            cfg.monitor = to.name
+            if w.moved then w.moved(fact.gx, fact.gy) end
+            save()
+            place()
+            fact.sliding = false
+            fact.land = 0
+            after(450, function()
+                fact.jump = false
+                fact.landed = false
+                text.gscr = ""
+            end)
         end)
     end)
     -- Let go without landing: the ghost goes. And a widget without its monitor, shown on another in Edit mode and dragged there: that monitor is its
