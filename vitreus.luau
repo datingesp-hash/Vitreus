@@ -7441,6 +7441,9 @@ do
     require("logic/theme_widgets")({
         theme = function() if not vtheme.loaded then return nil end local t = vtheme.current(); return t.id, t.name end,
         start = function(dir) exec_on_desktop('vitreus-keep "$HOME/.config/pleamar/shells/vitreus/' .. dir .. '/' .. dir .. '.plm"') end,
+        addons = addons.widgets,
+    })
+end
 -- the workspace marks' look and options (Settings > Bar > Workspaces), and the Apps look's icons: see logic/ws_marks.luau
 require("logic/ws_marks")({
     icon_for = function(class) return apps_by_class[class] or class end,
@@ -7456,9 +7459,6 @@ require("logic/ws_marks")({
     end,
     refresh_icons = function() end,
 })
-        addons = addons.widgets,
-    })
-end
 
 -- the wallpaper hook for the add-on that frames wallpapers: see logic/wallpaper_hook.luau
 require("logic/wallpaper_hook")(wp_apply, function() return wp_cur end)
