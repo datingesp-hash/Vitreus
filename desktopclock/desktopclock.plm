@@ -17,7 +17,7 @@ scene DesktopClock {
     //  monitor (~27 MB on the card each, drawing nothing but on one of them). See widget_place.luau.
     surface { size: 1, 1; anchor: top_left; margin: 0; level: background; screens: each max 4; reserve: -1; keyboard: none }
 
-    permissions { services: "clock", "files", "files.write"; run: "pleamar", "hyprctl", "socat", "printenv" }
+    permissions { services: "clock", "files", "files.write"; run: "pleamar", "hyprctl", "socat", "printenv", "vitreus-btnwait" }
 
     //  The shell's colours as facts (palette-live.plm reads them): Vitreus sets them when the palette changes (`push_pal` in vitreus.luau), so the theme
     //  changes the colour at once, not after a reload of this scene as the imported palette.plm did.
@@ -94,6 +94,23 @@ scene DesktopClock {
     fact pxp = 0           // and where the drag had it the time before (how fast it goes: a quick one crosses an edge between two of them)
     fact pyp = 0
     fact landed = false    // just sent there: `ghost` still shows it until its own surface is up on that monitor (the logic, a moment)
+    //  Carried over: with a mouse the drag ends at the monitor's edge (the compositor lets go of it there), so from then on the face follows the pointer
+    //  by itself, on whichever of `face` and `ghost` it is over (`cs`: 1 or 2; `cpx`, `cpy` there), until the logic hears the button come up
+    //  (bin/vitreus-btnwait) and puts it in the cell under it (`fgx`, `fgy`, which the scene keeps for it), on that monitor.
+    fact carry = false
+    fact cs = 1
+    fact cpx = 0
+    fact cpy = 0
+    fact kx = 0            // from the pointer to the middle of the face, when it was pressed
+    fact ky = 0
+    fact fgx = 0
+    fact fgy = 0
+    fact nocarry = false   // the button cannot be heard (no access to the input devices): it slides over to the edge instead (the logic says so)
+    //  A surface that has just been put on a monitor fades in (the compositor's own animation of a layer that appears), and one taken off fades out: so
+    //  nothing is drawn on one until it has been there a moment (`fready` for `face`, `gready` for `ghost`; the logic), and one is taken off only once
+    //  it draws nothing. That was the flicker when the widget went over.
+    fact fready = true
+    fact gready = false
     fact dfx = 0           // while it is dragged: from the middle of its cells to the middle of the face (the face follows the pointer, the cells come after)
     fact dfy = 0
     fact jump = false      // just gone over to another monitor: drawn at its new cell at once, not slid there by the cells' spring (the logic, a moment)
@@ -235,14 +252,16 @@ scene DesktopClock {
     let zy = if(dragging, zpy, fy) - hh - pad
     //  While it is dragged the face follows the pointer (`fxa`, `fya`), and the cells it would take follow under it; let go, it settles into them.
     //  Where it comes to rest over there, in this surface's coordinates (`gox`, `goy`: how far that monitor is): against the edge it came in by, at the same row
-    //  (or column), as `fx` and `fy` put a face at the first or the last cell.
+    //  (or column), as `fx` and `fy` put a face at the first or the last cell (only when it slides over: see `nocarry`).
     let tgx = if(land == 2, gox + gl + hw + 13, if(land == 1, gox + ghost.width - gr - hw - 13, fx + gox))
     let tgy = if(land == 4, goy + gt + hh + 13, if(land == 3, goy + ghost.height - gb - hh - 13, fy + goy))
-    //  Sliding over to the monitor next door, it goes from where it was let go to its place there (`tgx`, `tgy`, below), easing out.
     let stw = clamp((time - st0) / 0.3, 0, 1)
     let ste = 1 - (1 - stw) * (1 - stw) * (1 - stw)
-    let fxa = if(dragging, dcx + dfx, if(sliding, mix(sx0, tgx, ste), fx))
-    let fya = if(dragging, dcy + dfy, if(sliding, mix(sy0, tgy, ste), fy))
+    //  Carried: under the pointer, on the surface it is over, in this surface's coordinates.
+    let cfx = if(cs == 2, cpx + kx + gox, cpx + kx)
+    let cfy = if(cs == 2, cpy + ky + goy, cpy + ky)
+    let fxa = if(dragging, dcx + dfx, if(carry, cfx, if(sliding, mix(sx0, tgx, ste), fx)))
+    let fya = if(dragging, dcy + dfy, if(carry, cfy, if(sliding, mix(sy0, tgy, ste), fy)))
     let rawx = (dcx - gl) / gw - fw / 2
     let rawy = (dcy - gt) / gh - fh / 2
     //  Part of it over an edge with a monitor behind it (`near`): the logic puts the surface `ghost` on that monitor (`gscr`, `gox`, `goy`), which draws
@@ -258,6 +277,23 @@ scene DesktopClock {
     let pyf = pyn + (pyn - pyp)
     let tch = if((pxn >= scw - 48 or pxf >= scw) and nb_r, 2, if((pxn <= 48 or pxf <= 0) and nb_l, 1, if((pyn <= 48 or pyf <= 0) and nb_t, 3, if((pyn >= sch - 48 or pyf >= sch) and nb_b, 4, 0))))
     let goside = if(cross > 0, cross, tch)
+    //  Let go with the pointer past this monitor's edge: the drag went on over there (it does while `ghost` is already on that monitor, as it is from the
+    //  press), so it is let go over the other monitor, in `ghost`'s coordinates there.
+    let outp = if(pxn >= scw or pxn < 0 or pyn >= sch or pyn < 0, 1, 0)
+    //  The cell under the carried face (from the middle of its cells, `dfx` away), on the monitor it is over: that one's grid (`ghost` measures it) or this one's.
+    let ngw = (ghost.width - gl - gr) / gnx
+    let ngh = (ghost.height - gt - gb) / gny
+    let nfw = clamp(ceil(2 * hw / ngw), 1, gnx)
+    let nfh = clamp(ceil(2 * hh / ngh), 1, gny)
+    let dgx = if(cs == 2, clamp(floor((cfx - gox - dfx - gl) / ngw - nfw / 2 + 0.5), 0, gnx - nfw), clamp(floor((cfx - dfx - gl) / gw - fw / 2 + 0.5), 0, gnx - fw))
+    let dgy = if(cs == 2, clamp(floor((cfy - goy - dfy - gt) / ngh - nfh / 2 + 0.5), 0, gny - nfh), clamp(floor((cfy - dfy - gt) / gh - fh / 2 + 0.5), 0, gny - fh))
+    on change dgx while carry { fgx = dgx }
+    on change dgy while carry { fgy = dgy }
+    on change carry while carry { fgx = dgx; fgy = dgy }
+    on change pointer.x while carry { cpx = pointer.x }
+    on change pointer.y while carry { cpy = pointer.y }
+    //  No way to hear the button (the logic says `nocarry`): from where it is, it slides over to the edge it was carried over, as it did before.
+    on change nocarry while nocarry { sx0 = fxa; sy0 = fya; st0 = time; sliding = true; carry = false; nocarry = false }
     //  Come in from another monitor, it is put inside the grid: the last cell it fits in here.
     on change gx while gx > gnx - fw { gx = gnx - fw }
     on change gy while gy > gny - fh { gy = gny - fh }
@@ -269,16 +305,19 @@ scene DesktopClock {
     surface face {
         size: full, full; anchor: top_left; margin: 0; level: bottom, top while edit; screens: scr; reserve: -1
         //  While it is dragged the zone is the whole surface (a zone that moved with the card would lose the drag); pleamar keeps the drag going past its edge.
-        zone box edz { from: if(dragging, 0, zx), if(dragging, 0, zy); size: if(dragging, scw, 2 * (hw + pad)), if(dragging, sch, 2 * (hh + pad)); corner: 16; cursor: pointer; active: edit and shown; label: "Move clock" }
-        on press edz { ppx = pointer.x; ppy = pointer.y; pxn = pointer.x; pyn = pointer.y; pxp = pointer.x; pyp = pointer.y; pcx = gl + (ex0 + fw / 2) * gw; pcy = gt + (ey0 + fh / 2) * gh; dcx = pcx; dcy = pcy; dfx = fx - pcx; dfy = fy - pcy; zpx = fx; zpy = fy; dragging = true }
+        zone box edz { from: if(dragging or carry, 0, zx), if(dragging or carry, 0, zy); size: if(dragging or carry, scw, 2 * (hw + pad)), if(dragging or carry, sch, 2 * (hh + pad)); corner: 16; cursor: pointer; active: edit and shown; label: "Move clock" }
+        on enter edz { cs = if(carry, 1, cs); cpx = if(carry, pointer.x, cpx); cpy = if(carry, pointer.y, cpy) }
+        on press edz { kx = fx - pointer.x; ky = fy - pointer.y; cs = 1; ppx = pointer.x; ppy = pointer.y; pxn = pointer.x; pyn = pointer.y; pxp = pointer.x; pyp = pointer.y; pcx = gl + (ex0 + fw / 2) * gw; pcy = gt + (ey0 + fh / 2) * gh; dcx = pcx; dcy = pcy; dfx = fx - pcx; dfy = fy - pcy; zpx = fx; zpy = fy; dragging = true }
         on drag edz { dcx = if(dragging, pcx + drag.dx, dcx); dcy = if(dragging, pcy + drag.dy, dcy); pxp = pxn; pyp = pyn; pxn = if(dragging, ppx + drag.dx, pxn); pyn = if(dragging, ppy + drag.dy, pyn) }
         //  A right click does nothing here, on purpose: a scene that never names the right button is closed by one (pleamar's way out of a prototype with no
         //  keyboard), and the keeper starts it again a moment later, out of Edit mode: the widget went away and came back stuck.
         on press right edz { }
-        //  Let go: into the cell under it here; or, at an edge with a monitor behind it (`goside`), it slides over there and comes in by that edge, at the same
-        //  row (or column) (`land` and `sliding`; the logic moves it there when the slide is done, and puts it at that edge's cell).
-        on release edz { gx = if(dragging and goside == 0, clamp(floor(rawx + 0.5), 0, gnx - fw), gx); gy = if(dragging and goside == 0, clamp(floor(rawy + 0.5), 0, gny - fh), gy); sx0 = fxa; sy0 = fya; st0 = time; land = if(dragging, goside, 0); sliding = if(dragging, goside > 0, sliding); dragging = false; es = 0 }
+        //  Let go: into the cell under it here. Over the other monitor, or at the edge (`goside`): `carry` and `land` tell the logic, which listens for the
+        //  button. Let go over there (`outp`), the button is already up: it goes into the cell under it there. At the edge, the drag may have ended because the
+        //  compositor let go of it as the pointer went on over there: it is carried on from there, under the pointer, until the button comes up.
+        on release edz { gx = if(dragging and goside == 0, clamp(floor(rawx + 0.5), 0, gnx - fw), gx); gy = if(dragging and goside == 0, clamp(floor(rawy + 0.5), 0, gny - fh), gy); cpx = if(outp > 0.5, pxn - gox, pxn); cpy = if(outp > 0.5, pyn - goy, pyn); cs = if(outp > 0.5, 2, 1); carry = if(dragging, goside > 0, carry); land = if(dragging, goside, 0); dragging = false; es = 0 }
         group {
+            show: fready
             group {
                 show: edp > 0.01 and shown
                 opacity: edp
@@ -304,12 +343,16 @@ scene DesktopClock {
 
     //  The monitor next door, while the dragged face is partly over it, and for a moment after it has landed there (until `face` is up on it).
     //  Before it lands it draws the face where the drag has it, less how far that monitor is (`gox`, `goy`); after, where `face` will.
-    let gfx = if(dragging or sliding, fxa - gox, fx)
-    let gfy = if(dragging or sliding, fya - goy, fy)
+    let gfx = if(dragging or carry or sliding, fxa - gox, fx)
+    let gfy = if(dragging or carry or sliding, fya - goy, fy)
     surface ghost {
         size: full, full; anchor: top_left; margin: 0; level: bottom, top while edit; screens: gscr; reserve: -1; keyboard: none
+        //  While it is carried over here this whole surface hears the pointer (where it is, `cpx`, `cpy`), so the face can follow it.
+        zone box gz { from: 0, 0; size: ghost.width, ghost.height; cursor: pointer; active: carry }
+        on enter gz { cs = if(carry, 2, cs); cpx = if(carry, pointer.x, cpx); cpy = if(carry, pointer.y, cpy) }
+        on press right gz { }
         group {
-            show: dragging or sliding or landed
+            show: (dragging or carry or sliding or landed) and gready
             group {
                 show: edp > 0.01 and shown
                 opacity: edp

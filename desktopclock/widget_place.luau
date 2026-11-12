@@ -7,11 +7,12 @@
 -- surface each (~27 MB on the card per 1080p monitor, drawing or not), with the card drawn by one copy and the others empty; and dragging it to
 -- another monitor handed the drag from one copy to another halfway, which is where it got stuck.
 --
--- To move it to another monitor it is dragged against the edge that monitor is behind, in Edit mode. While part of it is over that edge (the scene
--- says which with `es`) a second surface, `ghost`, is put on that monitor (`gscr`, and how far it is, `gox`, `goy`) and draws the part that is over
--- there. Let go with the pointer at that edge (`land`), it slides over and stays there by that edge. With a mouse the drag ends at the edge anyway:
--- the compositor lets go of it when the pointer goes on to the other monitor, and the scene is not told when the button comes up there, so a drag
--- cannot go on across monitors; reaching the edge is the gesture. (Moving `face` itself mid-drag also ended the drag.) Or Settings > Widgets.
+-- To move it to another monitor it is dragged over there, in Edit mode, and let go where it should go. With a mouse the drag itself ends at the edge
+-- (the compositor lets go of it as the pointer goes on to the other monitor, and the scene is not told when the button comes up there), so from the
+-- edge on the widget is carried: it follows the pointer on a second surface, `ghost`, put on that monitor as the drag began, while bin/vitreus-btnwait
+-- listens for the button; let go, it is put in the cell under it, on the monitor it is over. Surfaces are put on and taken off monitors only while
+-- they draw nothing (the compositor fades a layer in and out), which was the flicker. Without access to the input devices it slides over to the
+-- edge instead. Or Settings > Widgets (`text mon_name`).
 --
 -- The monitors are learnt from `hyprctl monitors` (Hyprland's JSON, or pleamar-wm's text): names, and where they lie, which says which monitor is
 -- behind each edge (`nb_l`, `nb_r`, `nb_t`, `nb_b`, and their names in `nbn_*` for the hint). Where it does not answer (niri without the wrapper),
@@ -184,70 +185,115 @@ return function(w)
         end
     end)
 
-    -- Part of the dragged widget over an edge with a monitor behind it (`es`: 1 left, 2 right, 3 top, 4 bottom; 0 none): `ghost` goes on that
-    -- monitor. Back off the edge (or let go without landing), it goes away again, a moment later (so that wavering at the edge does not make and
-    -- unmake a surface each frame).
+    -- `ghost`: put on a monitor while it is empty, and drawn on only once it has faded in (`gready`, GFADE later: the compositor fades a layer that
+    -- appears in, ~0.4 s, and out when it goes); taken off only when it draws nothing. Making and unmaking surfaces as the widget went over was the
+    -- flicker; now it is put next door as the widget is pressed, on the side it is more likely to go to, and moved if it heads for another.
+    local GFADE = 450
     local ghost_n = 0
+    local function busy() return fact.dragging == true or fact.carry == true or fact.sliding == true or fact.landed == true end
+    local function ghost_on(side)
+        local from, to = find(text.scr), side and nb[side] and find(nb[side])
+        if not from or not to or not from.x or not to.x then return false end
+        if text.gscr == to.name then return true end
+        ghost_n = ghost_n + 1
+        local mine = ghost_n
+        fact.gready = false
+        fact.gox = to.x - from.x
+        fact.goy = to.y - from.y
+        text.gscr = to.name
+        after(GFADE, function() if mine == ghost_n then fact.gready = true end end)
+        return true
+    end
     local function ghost_off(delay)
         ghost_n = ghost_n + 1
         local mine = ghost_n
         after(delay, function()
-            if mine ~= ghost_n or fact.landed or (tonumber(fact.land) or 0) > 0 then return end
-            if (tonumber(fact.es) or 0) > 0 and fact.dragging then return end
+            if mine ~= ghost_n or busy() then return end
+            fact.gready = false
             text.gscr = ""
         end)
     end
+    -- The side it is more likely to go to: the edge with a monitor behind it nearest to where it was pressed.
+    local function likely_side()
+        local m = find(text.scr)
+        if not m or not m.w then return nil end
+        local px, py = tonumber(fact.ppx) or 0, tonumber(fact.ppy) or 0
+        local best, dist = nil, math.huge
+        for side, d in pairs({ l = px, r = m.w - px, t = py, b = m.h - py }) do
+            if nb[side] and d < dist then best, dist = side, d end
+        end
+        return best
+    end
     on("fact:es", function(v)
         local side = SIDES[math.floor((tonumber(v) or 0) + 0.5)]
-        local from, to = find(text.scr), side and nb[side] and find(nb[side])
-        if not side or not from or not to or not from.x or not to.x then ghost_off(250) return end
-        ghost_n = ghost_n + 1
-        fact.gox = to.x - from.x
-        fact.goy = to.y - from.y
-        if text.gscr ~= to.name then text.gscr = to.name end
+        if side and nb[side] and fact.dragging then ghost_on(side) end
     end)
-    -- Let go at an edge with a monitor behind it (`land`: which edge): the scene slides it over (`sliding`, ~0.3 s, drawn by `face` and by `ghost`
-    -- on that monitor), and then it is that monitor's: `face` goes there, at the edge it came in by (`gx`/`gy`, which the scene set), and `ghost`
-    -- keeps showing it until `face` is up there (`landed`); `jump` puts it in its cell at once.
+
+    -- It goes to monitor `name`, into cell `gx`, `gy`: `ghost` (on that monitor, faded in) shows it there while `face` is put on that monitor empty
+    -- (`fready` false) and fades in; then, in one go, `face` draws it and `ghost` stops, and `ghost` is taken off, empty.
+    local function arrive(name, gx, gy)
+        local to = find(name)
+        fact.carry = false
+        fact.sliding = false
+        fact.land = 0
+        if not to then ghost_off(0) return end
+        fact.fready = false
+        fact.landed = true
+        fact.jump = true
+        fact.gx = gx
+        fact.gy = gy
+        cfg.monitor = to.name
+        if w.moved then w.moved(gx, gy) end
+        save()
+        place()
+        after(GFADE, function()
+            fact.fready = true
+            fact.landed = false
+            fact.jump = false
+            ghost_off(120)
+        end)
+    end
+    -- Carried over an edge (`land`: which one): the button is listened for (bin/vitreus-btnwait). Let go over the other monitor, it goes there, into the cell
+    -- under it; back over its own, it stays there, in the cell under it. Without a way to hear the button (no access to the input devices), it slides
+    -- over to the edge it was carried over (`nocarry`), as it did before.
     local SLIDE_MS = 330
+    local ENTRY = { l = { 99, nil }, r = { 0, nil }, t = { nil, 99 }, b = { nil, 0 } }
     on("fact:land", function(v)
         local side = SIDES[math.floor((tonumber(v) or 0) + 0.5)]
-        local from, to = find(text.scr), side and nb[side] and find(nb[side])
-        if not to or not from or not from.x or not to.x then
-            fact.land = 0
-            fact.sliding = false
-            ghost_off(0)
+        if not side or not nb[side] then fact.carry = false; fact.land = 0; ghost_off(0) return end
+        ghost_on(side)
+        local function slide_over()
+            fact.nocarry = true
+            local e = ENTRY[side]
+            after(SLIDE_MS, function() arrive(nb[side], e[1] or fact.gx, e[2] or fact.gy) end)
+        end
+        local ok = pcall(run, "vitreus-btnwait", { "30" }, function(_, code)
+            if not fact.carry then return end
+            if code ~= 0 then slide_over() return end
+            if math.floor((tonumber(fact.cs) or 1) + 0.5) == 2 and text.gscr ~= "" then
+                arrive(text.gscr, fact.fgx, fact.fgy)
+            else
+                fact.gx = fact.fgx
+                fact.gy = fact.fgy
+                if w.moved then w.moved(fact.gx, fact.gy) end
+                save()
+                fact.carry = false
+                fact.land = 0
+                ghost_off(150)
+            end
+        end)
+        if not ok then slide_over() end
+    end)
+    -- Pressed: `ghost` goes next door, empty, on the likelier side. Let go without carrying it anywhere: it goes. And a widget without its monitor,
+    -- shown on another in Edit mode and dragged there: that monitor is its own now.
+    on("fact:dragging", function(v)
+        if v == true or v == 1 then
+            local side = likely_side()
+            if side then ghost_on(side) end
             return
         end
-        ghost_n = ghost_n + 1                 -- (no ghost going away now)
-        fact.gox = to.x - from.x
-        fact.goy = to.y - from.y
-        if text.gscr ~= to.name then text.gscr = to.name end
-        after(SLIDE_MS, function()
-            fact.landed = true
-            fact.jump = true
-            -- the cell by the edge it came in at (99: the last one it fits in; the scene brings it back inside its grid), the row (or column) as it was
-            if side == "l" then fact.gx = 99 elseif side == "r" then fact.gx = 0 end
-            if side == "t" then fact.gy = 99 elseif side == "b" then fact.gy = 0 end
-            cfg.monitor = to.name
-            if w.moved then w.moved(fact.gx, fact.gy) end
-            save()
-            place()
-            fact.sliding = false
-            fact.land = 0
-            after(450, function()
-                fact.jump = false
-                fact.landed = false
-                text.gscr = ""
-            end)
-        end)
-    end)
-    -- Let go without landing: the ghost goes. And a widget without its monitor, shown on another in Edit mode and dragged there: that monitor is its
-    -- own now.
-    on("fact:dragging", function(v)
-        if v == true or v == 1 then return end
-        ghost_off(120)
-        if fact.orphan and text.scr ~= "" and not ((tonumber(fact.land) or 0) > 0) then
+        if not fact.carry then ghost_off(150) end
+        if fact.orphan and text.scr ~= "" and not fact.carry then
             cfg.monitor = text.scr
             save()
             place()
