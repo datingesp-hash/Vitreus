@@ -5,8 +5,9 @@ A desktop widget dragged over to another monitor loses its drag there: the compo
 and the scene is not told when the button comes up on the other side. While it is carried over (desktopclock/widget_place.luau), this tells it.
 
 Reads the input devices that have a left button (mice, touchpads, tablets): /dev/input/event*, readable for the `input` group.
-Exit 0: the button is up (now, or it was not down when this started). Exit 2: no device could be read (the widget then goes on as without this).
-Exit 3: still down after SECONDS (30): given up. Uses python-evdev when it is there, else reads the devices' events and state itself."""
+Prints "down" at once when the button is down as it starts (so that the widget knows to go on following the pointer), then waits for it, blocked on the
+devices: nothing runs meanwhile. Exit 0: the button is up (now, or it was not down when this started: nothing printed). Exit 2: no device could be read.
+Exit 3: still down after SECONDS (30): given up."""
 import os, select, struct, sys, time, fcntl, array
 
 LIMIT = float(sys.argv[1]) if len(sys.argv) > 1 else 30.0
@@ -51,6 +52,7 @@ if not fds:
     sys.exit(2)
 if not any(left_down(fd) for fd in fds):
     sys.exit(0)
+print("down", flush=True)
 
 EVENT = struct.Struct("llHHi")           # struct input_event: time (two longs), type, code, value
 end = time.monotonic() + LIMIT
