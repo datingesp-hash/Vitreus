@@ -6667,11 +6667,12 @@ end
     end
 
     -- A card on the desktop with its own scene: asked how it is, started if it is not running, and shown or put away. (The desktop editor, desktopedit/, says
-    -- these over `pleamar --say`; the clock is already running, as it starts with the desktop.)
-    local function toggle_scene(name, dir)
+    -- these over `pleamar --say`; the clock is already running, as it starts with the desktop.) The clock and the system monitor share one process,
+    -- desktopwidgets/, which brings both in (pleamar 0.8's `import scene`): that is the one started when neither answers.
+    local function toggle_scene(name)
         run("pleamar", { "--say", name, "get shown" }, function(out, code)
             if code ~= 0 then
-                exec_on_desktop('vitreus-keep "$HOME/.config/pleamar/shells/vitreus/' .. dir .. '/' .. dir .. '.plm"')
+                exec_on_desktop('vitreus-keep "$HOME/.config/pleamar/shells/vitreus/desktopwidgets/desktopwidgets.plm"')
                 after(2500, function() run("pleamar", { "--say", name, "fact shown true" }, function() end) end)
                 return
             end
@@ -6720,8 +6721,8 @@ end
         new_sticker(math.floor((tonumber(fact.sn_mon) or 0) + 0.5), math.floor(tonumber(fact.sn_x) or -1), math.floor(tonumber(fact.sn_y) or -1))
         fact.sn_mon, fact.sn_x, fact.sn_y = 0, -1, -1
     end)
-    on("dclock_toggle", function() toggle_scene("desktopclock", "desktopclock") end)
-    on("dsys_toggle", function() toggle_scene("desktopsysmon", "desktopsysmon") end)
+    on("dclock_toggle", function() toggle_scene("desktopclock") end)
+    on("dsys_toggle", function() toggle_scene("desktopsysmon") end)
 
     -- ── commands ──
     local function open_settings(page)
@@ -6765,7 +6766,7 @@ end
             -- A card on the desktop (desktopsysmon/) with its own scene: asked how it is, and started if it is not running.
             run("pleamar", { "--say", "desktopsysmon", "get shown" }, function(out, code)
                 if code ~= 0 then
-                    exec_on_desktop('vitreus-keep "$HOME/.config/pleamar/shells/vitreus/desktopsysmon/desktopsysmon.plm"')
+                    exec_on_desktop('vitreus-keep "$HOME/.config/pleamar/shells/vitreus/desktopwidgets/desktopwidgets.plm"')
                     after(2500, function() run("pleamar", { "--say", "desktopsysmon", "fact shown true" }, function() end) end)
                     return
                 end

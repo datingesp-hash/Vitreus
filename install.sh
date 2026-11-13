@@ -391,6 +391,10 @@ if [ "$action" = uninstall ]; then
         run sed -i '/vitreus\/desktopsysmon\/desktopsysmon\.plm/d' "$autostart"
         say "removed the desktop system monitor's line from $autostart"
     fi
+    if [ -f "$autostart" ] && grep -q 'vitreus/desktopwidgets/desktopwidgets.plm' "$autostart"; then
+        run sed -i '/vitreus\/desktopwidgets\/desktopwidgets\.plm/d' "$autostart"
+        say "removed the desktop widgets' line from $autostart"
+    fi
     if [ -f "$autostart" ] && grep -q 'vitreus/cursortrail/cursortrail.plm' "$autostart"; then
         run sed -i '/vitreus\/cursortrail\/cursortrail\.plm/d' "$autostart"
         say "removed the UwU cursor trail's line from $autostart"
@@ -1137,8 +1141,7 @@ line="vitreus-keep $dest/vitreus.plm \"\$HOME/.local/share/pleamar/vitreus/vitre
 # surface for that ("Null buffer attached"): the lock screen died the moment it showed. Take it out once pleamar fixes it.
 lockline="PLEAMAR_SWAPCHAIN=1 vitreus-keep $dest/lockscreen/lockscreen.plm"
 transline="vitreus-keep $dest/wptrans/wptrans.plm"
-clockline="vitreus-keep $dest/desktopclock/desktopclock.plm"
-sysmonline="vitreus-keep $dest/desktopsysmon/desktopsysmon.plm"
+widgetsline="vitreus-keep $dest/desktopwidgets/desktopwidgets.plm"
 if $do_autostart; then
     # Lines from before the keeper started the scenes straight, once: they go through it now (with or without VAR=value words in front: a line that
     # keeps the shell outside the keeper is one that nothing starts again when Settings stops it to apply a theme's font).
@@ -1176,19 +1179,20 @@ if $do_autostart; then
         if $dry; then would "add to $autostart: $transline"; else printf '%s\n' "$transline" >> "$autostart"; fi
         say "the wallpaper picker's hexagon dissolve starts with the desktop too (a line in $autostart)"
     fi
-    # The desktop clock (digits of glass on the bottom layer) is a scene of its own as well; it starts shown, and turns off from the launcher.
-    if [ -f "$autostart" ] && grep -q 'desktopclock/desktopclock.plm' "$autostart"; then
-        say "the desktop clock is already in $autostart"
+    # The desktop clock (digits of glass on the bottom layer, shown at first) and the desktop system monitor (a small glass card, hidden at first) run in
+    # one process, desktopwidgets/, which brings both scenes in (pleamar 0.8's `import scene`); each still answers to its own name. Lines from before,
+    # one process each, are taken out.
+    for old in desktopclock desktopsysmon; do
+        if [ -f "$autostart" ] && grep -q "$old/$old.plm" "$autostart"; then
+            if $dry; then would "take $old's own line out of $autostart"; else sed -i "/$old\\/$old\\.plm/d" "$autostart"; fi
+            say "$old now runs inside desktopwidgets (one process for the clock and the system monitor)"
+        fi
+    done
+    if [ -f "$autostart" ] && grep -q 'desktopwidgets/desktopwidgets.plm' "$autostart"; then
+        say "the desktop widgets are already in $autostart"
     else
-        if $dry; then would "add to $autostart: $clockline"; else printf '%s\n' "$clockline" >> "$autostart"; fi
-        say "the desktop clock starts with the desktop too (a line in $autostart); \"Desktop clock: toggle\" in the launcher turns it off"
-    fi
-    # The desktop system monitor (a small glass card on the bottom layer) is a scene of its own too; it starts hidden, and "Desktop system monitor: toggle" in the launcher shows it.
-    if [ -f "$autostart" ] && grep -q 'desktopsysmon/desktopsysmon.plm' "$autostart"; then
-        say "the desktop system monitor is already in $autostart"
-    else
-        if $dry; then would "add to $autostart: $sysmonline"; else printf '%s\n' "$sysmonline" >> "$autostart"; fi
-        say "the desktop system monitor starts with the desktop too, hidden (a line in $autostart); \"Desktop system monitor: toggle\" in the launcher shows it"
+        if $dry; then would "add to $autostart: $widgetsline"; else printf '%s\n' "$widgetsline" >> "$autostart"; fi
+        say "the desktop clock and system monitor start with the desktop too (a line in $autostart); \"Desktop clock: toggle\" and \"Desktop system monitor: toggle\" in the launcher show or hide them"
     fi
     # The UwU cursor trail: a scene of its own that only draws while the theme is UwU. The shell starts it when UwU is chosen and stops it on any
     # other theme (see push_look in vitreus.luau), so it no longer starts with the desktop: a line from before is taken out.

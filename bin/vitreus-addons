@@ -99,7 +99,7 @@ if REMOVE:
     shutil.move(folder, os.path.join(dest, "%s-%d" % (name, int(time.time()))))
     sys.exit(0)
 
-RESERVED = {"vitreus", "desktopclock", "desktopsysmon", "desktopnotes", "desktopmenu", "desktopmenu_hypr", "desktopedit", "desktopcards", "webcam", "lockscreen", "wptrans", "files", "cursortrail", "dashboard", "snap", "wm"}
+RESERVED = {"vitreus", "desktopclock", "desktopsysmon", "desktopwidgets", "desktopnotes", "desktopmenu", "desktopmenu_hypr", "desktopedit", "desktopcards", "webcam", "lockscreen", "wptrans", "files", "cursortrail", "dashboard", "snap", "wm"}
 found, errors = [], []
 for root in (user, bundled):      # the user's folder first: an add-on there wins over a bundled one of the same name
     if not os.path.isdir(root):

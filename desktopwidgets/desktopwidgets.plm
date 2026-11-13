@@ -1,0 +1,12 @@
+language 0.1
+// vitreus-fonts: lean   (both widgets draw only in "Space Grotesk": see bin/vitreus-fonts)
+
+//  The desktop widgets in one process (pleamar 0.8): the clock (desktopclock/) and the system monitor (desktopsysmon/) brought in as scenes of their
+//  own. A pleamar process costs ~60 MB of memory and ~40 MB on the card before it draws anything, so the two share it, and each surface one of them
+//  does not draw on is closed, which costs nothing since 0.8. Each keeps its own logic, its own settings file and its name for `--say`
+//  (`pleamar --say desktopclock "fact shown true"` reaches the clock here), so the rest of Vitreus talks to them as before. Each still opens alone.
+
+import scene "../desktopclock/desktopclock.plm" as Desktopclock
+import scene "../desktopsysmon/desktopsysmon.plm" as Desktopsysmon
+
+scene Desktopwidgets { }
