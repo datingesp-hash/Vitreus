@@ -8037,7 +8037,7 @@ scene Vitreus {
         group { scale: rs; pivot: floor(lx + 424 * pu + 0.5), floor(lry + (lr * 44 + 4 + 9) * pu + 0.5); text lfoot { at: floor(lx + 424 * pu + 0.5), floor(lry + (lr * 44 + 4 + 9) * pu + 0.5); anchor: right center; align: right; size: 13.5; width: (120 * pu) / rs; lines: 1; color: faint; opacity: 70%; family: "Space Grotesk" } }
     }
 
-    include "pages/settings_panel.plm"
+    include "pages/settings_panel.plm" while panel == settings or ds > 0.001
     prop volume_level = 0 ~119ms
     follow volume_level = if(audio.muted, 0, audio.volume)
     prop bright_level = 0 ~119ms
