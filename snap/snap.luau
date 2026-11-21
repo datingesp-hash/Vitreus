@@ -17,6 +17,13 @@ end
 local function trim(s) return (s or ""):gsub("%s+$", "") end
 
 local function say_quit()
+    -- (what it made in the runtime folder goes first: the whole screen as taken, unblurred, stayed there after Snap had gone)
+    if dir then
+        run("sh", { "-c", 'rm -rf -- "$1/shot.png" "$1/shot.rgb" "$1/out.png" "$1/drag"', "sh", dir }, function()
+            run("pleamar", { "--say", "snap", "quit" }, function() end)
+        end)
+        return
+    end
     run("pleamar", { "--say", "snap", "quit" }, function() end)
 end
 
@@ -203,6 +210,15 @@ on("pen_pt", function()
     local p = stroke.pts
     local dx, dy = fact.px - p[#p - 1], fact.py - p[#p]
     if dx * dx + dy * dy < 9 then return end
+    -- (no more than the scene can show: past it, the strokes went on being kept and were in the saved picture, without ever being seen)
+    local n = 0
+    for _, m in ipairs(marks) do if m.pts then n = n + math.max(1, #m.pts / 2 - 1) end end
+    if n >= MAX_SEGS then
+        text.toast = "The pen is full: undo a stroke, or save this one"
+        fact.toast_on = true
+        stroke = nil
+        return
+    end
     p[#p + 1] = fact.px
     p[#p + 1] = fact.py
     show()
@@ -521,6 +537,7 @@ end
 on("do_ocr_copy", function()
     if not dir then fact.busy = 0 return end
     read_text("", function(out)
+        if out == nil then toast("The text could not be read (is tesseract installed?)", 3200) return end
         local s = trim((out or ""):gsub("\n\n+", "\n\n"))
         if s == "" then
             toast("No text found here", 2600)
@@ -530,7 +547,7 @@ on("do_ocr_copy", function()
             local first = s:gsub("%s+", " ")
             if #first > 80 then first = first:sub(1, 77) .. "..." end
             run("notify-send", { "-a", "Snap", "Text copied", first }, function() say_quit() end)
-        end)
+        end, { output = false })      -- wl-copy stays behind holding the clipboard: waiting for its output never ends
     end)
 end)
 
@@ -548,6 +565,8 @@ end
 on("do_hide", function()
     if not dir then fact.busy = 0 return end
     read_text("tsv", function(out, k)
+        -- (not read at all is not "nothing private found": said so, or a screenshot went out unblurred on the word of a tesseract that is not installed)
+        if out == nil then toast("The text could not be read (is tesseract installed?)", 3200) return end
         -- The words, line by line: level 5 rows of the tsv, keyed by block, paragraph and line.
         local lines, order = {}, {}
         for row in (out or ""):gmatch("[^\n]+") do
@@ -610,6 +629,94 @@ on("do_hide", function()
             end
         end)
     end)
+end)
+
+-- ── The colour picker ────────────────────────────────────────────────────────────────────────────────────────────
+-- Read from the picture itself, not the screen (Snap covers it). The first time the tool is picked, the picture is written out once as raw RGB
+-- (shot.rgb, 3 bytes a pixel, row after row), so each move of the pointer reads only its 11 rows of 33 bytes with `od` instead of decoding the PNG.
+-- One read at a time: moves that come while one runs are folded into a single read where the pointer is when it ends.
+local raw_h = 0         -- the picture's height, once shot.rgb is there; 0 before
+local raw_making = false
+local pick_running, pick_again = false, false
+local copy_wanted = false
+
+-- The pixel the scene's (x, y) is on, in the picture (the same plane `view` works in: a whole-screen picture shown smaller has its corner at vx, vy).
+local function pixel_at(x, y)
+    local v = tonumber(fact.vs) or 1
+    if v <= 0 then v = 1 end
+    local k = (shot_w > 0 and fact.scrw > 0) and shot_w / (fact.scrw * v) or 1
+    return math.floor((x - (tonumber(fact.vx) or 0)) * k), math.floor((y - (tonumber(fact.vy) or 0)) * k)
+end
+
+local function copy_hex()
+    copy_wanted = false
+    local h = text.hex
+    if not fact.hex_ok or h == "" then return end
+    run("sh", { "-c", 'printf "%s" "$1" | wl-copy', "sh", h }, function(_, code)
+        if code == 0 then toast("Copied " .. h, 2200) else toast("Could not copy the colour", 2600) end
+    end, { output = false })
+end
+
+local function read_pick()
+    if raw_h <= 0 or shot_w < 11 then return end
+    if pick_running then pick_again = true return end
+    pick_running, pick_again = true, false
+    local X, Y = pixel_at(fact.px, fact.py)
+    X = math.max(0, math.min(shot_w - 1, X))
+    Y = math.max(0, math.min(raw_h - 1, Y))
+    local x0 = math.max(0, math.min(shot_w - 11, X - 5))
+    local script = 'f=$1; w=$2; h=$3; x=$4; y=$5; i=0; while [ $i -lt 11 ]; do r=$((y - 5 + i)); '
+        .. 'if [ $r -ge 0 ] && [ $r -lt $h ]; then od -An -v -tu1 -j $(((r * w + x) * 3)) -N 33 "$f" | tr -s " \\n" "  "; fi; echo; i=$((i + 1)); done'
+    run("sh", { "-c", script, "sh", dir .. "/shot.rgb", tostring(shot_w), tostring(raw_h), tostring(x0), tostring(Y) }, function(out, code)
+        pick_running = false
+        if code == 0 and out then
+            local cells, row = {}, 0
+            for line in (out .. "\n"):gmatch("(.-)\n") do
+                if row >= 11 then break end
+                local b = {}
+                for n in line:gmatch("%d+") do b[#b + 1] = tonumber(n) end
+                for col = 0, 10 do
+                    local want = X - 5 + col          -- the pixel this cell shows, and where it is in the row that was read
+                    local j = (want - x0) * 3
+                    local i = row * 11 + col + 1
+                    if want >= 0 and want < shot_w and b[j + 3] then
+                        cells[i] = { r = b[j + 1] / 255, g = b[j + 2] / 255, b = b[j + 3] / 255, a = 1 }
+                        if row == 5 and col == 5 then text.hex = string.format("#%02x%02x%02x", b[j + 1], b[j + 2], b[j + 3]) end
+                    else
+                        cells[i] = { r = 0, g = 0, b = 0, a = 0 }
+                    end
+                end
+                row = row + 1
+            end
+            model.loupe = cells
+            fact.hex_ok = true
+        end
+        if pick_again then read_pick() elseif copy_wanted then copy_hex() end
+    end)
+end
+
+local function make_raw()
+    if raw_h > 0 or raw_making or not dir then return end
+    raw_making = true
+    run("sh", { "-c", 'magick "$1/shot.png" -depth 8 rgb:"$1/shot.rgb" && od -An -tu1 -j20 -N4 "$1/shot.png" | awk "{ print \\$1 * 16777216 + \\$2 * 65536 + \\$3 * 256 + \\$4 }"', "sh", dir },
+        function(out, code)
+            raw_making = false
+            raw_h = code == 0 and tonumber((out or ""):match("%d+")) or 0
+            if raw_h > 0 then read_pick() else toast("The colour picker could not read the picture", 3000) end
+        end)
+end
+
+on("fact:tool", function(t)
+    if t == 11 then make_raw() else fact.hex_ok = false end
+end)
+on("pick_at", function()
+    if raw_h > 0 then read_pick() else make_raw() end
+end)
+-- A click reads the pixel under it (the last move may not have been read yet), then copies it; Snap stays open, for the next one.
+on("pick_copy", function()
+    copy_wanted = true
+    if raw_h <= 0 then make_raw() return end
+    read_pick()
 end)
 
 show()

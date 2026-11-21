@@ -43,8 +43,8 @@ return function()
             if not mons then return end
             local per = {}
             local ids = {}
-            for name, id in mons:gmatch("Monitor (%S+) %(ID (%d+)%)") do
-                per[name] = { id = tonumber(id), list = {} }
+            for id, name in pairs(mon_names(mons)) do
+                per[name] = { id = id, list = {} }
                 ids[#ids + 1] = name
             end
             if #ids == 0 then return end
@@ -82,5 +82,5 @@ return function()
         end)
     end
     after(3000, function() push(true) end)
-    every(20000, function() push(true) end)
+    every(20000, function() if fact.wm_session == true then push(true) end end)   -- (only pleamar-wm has the scene this is said to: elsewhere it was a failing command every 20 s)
 end

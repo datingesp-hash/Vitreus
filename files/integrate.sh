@@ -17,6 +17,11 @@
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
 dest=$(cd "$here/.." && pwd)
+# (the path quoted in the entries, and its `|`, `&` or `\` escaped for sed: a home with a space in it gave commands that ran nothing)
+# (quoted in the entry only when it has to be: xdg-open, outside a desktop it knows, takes the quotes as part of the program's name and opens nothing)
+bin=$dest/bin/vitreus-files
+case $bin in *[!A-Za-z0-9/._+-]*) bin="\"$bin\"" ;; esac
+bin_esc=$(printf '%s' "$bin" | sed 's/[\\&|]/\\&/g')
 data=${XDG_DATA_HOME:-$HOME/.local/share}
 conf=${XDG_CONFIG_HOME:-$HOME/.config}
 state=$data/pleamar/vitreus
@@ -50,6 +55,12 @@ else
     ask_prefix='vitreus · '; ask_yn='[Y/n]'
 fi
 have() { command -v "$1" > /dev/null 2>&1; }
+# A D-Bus service file written or taken away in ~/.local/share/dbus-1/services: dbus-broker (Arch's session bus) does not watch that folder and goes on starting
+# the old program (Nautilus for «Show in folder») until told to read it again; dbus-daemon is told the same and does not mind.
+reload_bus() {
+    if have busctl; then busctl --user call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus ReloadConfig > /dev/null 2>&1 || true
+    elif have dbus-send; then dbus-send --session --type=method_call --dest=org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus.ReloadConfig > /dev/null 2>&1 || true; fi
+}
 current() { xdg-mime query default inode/directory 2> /dev/null || true; }
 # What the person has chosen for folders (the line in mimeapps.list), not what the desktop's list would give.
 explicit() { sed -n 's/^inode\/directory=\([^;]*\).*/\1/p' "$mimeapps" 2> /dev/null | head -n 1; }
@@ -74,7 +85,8 @@ portal_on() {
     fi
     mkdir -p "$(dirname "$pfile")" "$(dirname "$pservice")" "$pconf"
     printf '[portal]\nDBusName=org.freedesktop.impl.portal.desktop.vitreus\nInterfaces=org.freedesktop.impl.portal.FileChooser;\n' > "$pfile"
-    printf '[D-BUS Service]\nName=org.freedesktop.impl.portal.desktop.vitreus\nExec=%s/bin/vitreus-portal\n' "$dest" > "$pservice"
+    printf '[D-BUS Service]\nName=org.freedesktop.impl.portal.desktop.vitreus\nExec="%s/bin/vitreus-portal"\n' "$dest" > "$pservice"
+    reload_bus
     for d in pleamar hyprland; do
         f=$pconf/$d-portals.conf
         if [ ! -f "$f" ]; then
@@ -100,6 +112,7 @@ portal_off() {
     done
     [ -f "$pfile" ] || [ -f "$pservice" ] || return 0
     rm -f "$pfile" "$pservice"
+    reload_bus
     have systemctl && systemctl --user try-restart xdg-desktop-portal.service 2> /dev/null || true
     say "file dialogs are the desktop's own again"
 }
@@ -114,6 +127,7 @@ if [ "$action" = remove ]; then
         esac
     fi
     rm -f "$prev" "$service" "$entry" "$icon"
+    reload_bus
     refresh_caches
     say "Files is no longer registered with the desktop"
     exit 0
@@ -137,9 +151,9 @@ fi
 
 # The entry: it claims folders only for someone who chose it (now, or before: a refresh keeps that).
 if [ "$mode" = yes ] || [ "$had" = vitreus-files.desktop ]; then
-    sed "s|@BIN@|$dest/bin/vitreus-files|" "$here/vitreus-files.desktop" > "$entry"
+    sed "s|@BIN@|$bin_esc|" "$here/vitreus-files.desktop" > "$entry"
 else
-    sed -e "s|@BIN@|$dest/bin/vitreus-files|" -e '/^MimeType=/d' "$here/vitreus-files.desktop" > "$entry"
+    sed -e "s|@BIN@|$bin_esc|" -e '/^MimeType=/d' "$here/vitreus-files.desktop" > "$entry"
 fi
 refresh_caches
 say "Files has its icon and its entry ($entry)"
@@ -161,8 +175,9 @@ if python3 -c 'import gi; gi.require_version("Gio", "2.0")' 2> /dev/null; then
     cat > "$service" <<EOF
 [D-BUS Service]
 Name=org.freedesktop.FileManager1
-Exec=$dest/bin/vitreus-filemanager
+Exec="$dest/bin/vitreus-filemanager"
 EOF
+    reload_bus
     say "«Show in folder» opens Files ($service)"
     if have busctl && busctl --user status org.freedesktop.FileManager1 > /dev/null 2>&1; then
         say "another file manager is running and answers it now: it takes effect once that one has quit"

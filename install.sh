@@ -23,20 +23,25 @@
 #                                      on any other distribution it lists what to install by hand).
 #                                      hyprsunset is required on Hyprland (Night mode): without it, this stops
 #   2. pleamar, the runtime           (its own installer, into your home; a few minutes to build)
-#   3. the fonts                      (Space Grotesk, and the five the Retro, UwU, Cyber, Milkbox and Proxy themes are drawn in: Audiowide, Mochiy Pop One, Orbitron, Zen Kurenaido and Titan One;
+#   3. the fonts                      (Space Grotesk, Space Mono for the terminal, and the five the Retro, UwU, Cyber, Milkbox and Proxy themes are drawn in: Audiowide, Mochiy Pop One, Orbitron, Zen Kurenaido and Titan One;
 #                                      into ~/.local/share/fonts, no sudo)
 #   4. the shell                      (into ~/.config/pleamar/shells/vitreus: cloned, or updated)
 #   5. your palette, autostart entry  (made once and never written over)
-#   5b. the helpers                  (bin/vitreus-clipimg, vitreus-polkit-agent, vitreus-sysmon, vitreus-battery, vitreus-greeter, vitreus-term, vitreus-files, vitreus-edit, vitreus-report and vitreus-btnwait, linked into ~/.local/bin; vitreus-inhibit, built there)
+#   5b. the helpers                  (bin/vitreus-clipimg, vitreus-polkit-agent, vitreus-sysmon, vitreus-battery, vitreus-greeter, vitreus-term, vitreus-files, vitreus-edit, vitreus-report, vitreus-btnwait and vitfetch, linked into ~/.local/bin; vitreus-inhibit, built there)
 #   5c. Files, as a program            (its icon and entry in ~/.local/share; asked: the file manager for folders and «Show in folder», files/integrate.sh)
 #   5d. View, as a program             (its icon and entry in ~/.local/share; asked: what opens pictures and videos, view/integrate.sh)
-#   6. its Hyprland key binds         (hypr_vitreus.lua linked into ~/.config/hypr, and loaded from hyprland.lua)
+#   6. its Hyprland key binds         (hypr_vitreus.lua linked into ~/.config/hypr, and loaded from hyprland.lua, which also starts the
+#                                      shell (pleamar --autostart); a hyprland.lua not written yet is made from Hyprland's stock one)
 #   6b. the daemons                   (awww, hypridle and the clipboard history: lines in ~/.config/pleamar/autostart, run on any compositor)
 #   6c. niri                        (config.kdl includes vitreus.kdl, the room round the windows the shell writes, and niri_vitreus.kdl, its key binds; with niri installed)
 #   7. pleamar-wm, as a session       (pleamar-wm/: its keys, window scene, hyprctl shim, and, with sudo,
 #                                      its entry in the login screen; only if pleamar-wm is installed)
-#   8. the login screen               (sddm/: the lock screen's look as an SDDM theme, with sudo, asked for; where SDDM already has a theme it asks
+#   8. the login screen               (SDDM itself, installed and enabled where the machine has no display manager; and sddm/: the lock screen's
+#                                      look as an SDDM theme, with sudo, asked for; where SDDM already has a theme it asks
 #                                      before it is replaced. ./sddm/install.sh [IMAGE] does it again with another picture)
+#
+#   9. the terminal                   (terminal/: Ghostty in the Vitreus look, Space Mono, frosted, a cursor trail, by one config-file line in ~/.config/ghostty/config;
+#                                      and vitfetch, the fetch, when a terminal opens: a line in your shell's rc file, with Ghostty or kitty installed. Both asked)
 #
 # It never installs a compositor: Vitreus is developed on Hyprland, and needs one that has layer-shell.
 set -eu
@@ -44,6 +49,8 @@ set -eu
 repo="${VITREUS_REPO:-https://github.com/natepayn3/Vitreus.git}"
 pleamar_installer="${PLEAMAR_INSTALLER:-https://raw.githubusercontent.com/k4ditano/pleamar/main/install.sh}"
 font_url="https://github.com/google/fonts/raw/main/ofl/spacegrotesk/SpaceGrotesk%5Bwght%5D.ttf"
+# The terminal's typeface, Space Mono (Space Grotesk's monospaced sibling; Google Fonts, OFL), for terminal/ghostty.conf.
+spacemono_url="https://github.com/google/fonts/raw/main/ofl/spacemono"
 # The Retro theme's typeface, Audiowide (a rounded sci-fi face), and the UwU theme's (both Google Fonts, OFL).
 # Both are optional: without one, that theme keeps Space Grotesk.
 dot_url="https://github.com/google/fonts/raw/main/ofl/audiowide/Audiowide-Regular.ttf"
@@ -67,10 +74,12 @@ kalam_url="https://github.com/google/fonts/raw/main/ofl/kalam"
 
 conf="${XDG_CONFIG_HOME:-$HOME/.config}"
 data="${XDG_DATA_HOME:-$HOME/.local/share}"
+ghostty_conf="$conf/ghostty/config"
 dest="$conf/pleamar/shells/vitreus"
 autostart="$conf/pleamar/autostart"
 fonts="$data/fonts/SpaceGrotesk"
 fonts_dot="$data/fonts/Audiowide"
+fonts_spacemono="$data/fonts/SpaceMono"
 fonts_mochiy="$data/fonts/MochiyPopOne"
 fonts_orbitron="$data/fonts/Orbitron"
 fonts_kurenaido="$data/fonts/ZenKurenaido"
@@ -79,12 +88,12 @@ fonts_fuzzy="$data/fonts/FuzzyBubbles"
 fonts_kalam="$data/fonts/Kalam"
 
 # Official-repo packages, then AUR ones: what each is for is in the README.
-pacman_pkgs="gcc pkgconf wayland wayland-protocols git curl jq python fontconfig socat glib2 file imagemagick cava playerctl networkmanager bluez bluez-utils brightnessctl hypridle libnotify xdg-user-dirs xdg-utils wl-clipboard cliphist awww ffmpeg xdg-desktop-portal-gtk grim slurp wf-recorder power-profiles-daemon polkit python-gobject python-pyte ttf-space-mono-nerd pipewire-audio sound-theme-freedesktop tesseract tesseract-data-eng"
+pacman_pkgs="gcc pkgconf wayland wayland-protocols git curl jq python fontconfig socat glib2 file imagemagick cava playerctl networkmanager bluez bluez-utils brightnessctl hypridle libnotify xdg-user-dirs xdg-utils wl-clipboard cliphist awww ffmpeg xdg-desktop-portal-gtk grim slurp wf-recorder power-profiles-daemon polkit python-gobject python-pyte python-pillow fastfetch ttf-space-mono-nerd pipewire-audio wireplumber pipewire-pulse pipewire-alsa sound-theme-freedesktop tesseract tesseract-data-eng"
 aur_pkgs="iris-colors mpvpaper"
 # Debian and Ubuntu: the same list by their names. UNTESTED (written without a Debian machine to try it on), and some of these are
 # not in every release (hypridle, cliphist, wf-recorder...): each is looked up and installed on its own, and a missing one is only said.
 # Not here, because Debian has no package: awww, mpvpaper, hyprsunset, iris, the Space Mono Nerd Font (listed below for hand install).
-apt_pkgs="gcc pkgconf libwayland-dev wayland-protocols git curl jq python3 fontconfig socat libglib2.0-bin file imagemagick cava playerctl network-manager bluez brightnessctl hypridle libnotify-bin xdg-user-dirs xdg-utils wl-clipboard cliphist ffmpeg xdg-desktop-portal-gtk grim slurp wf-recorder power-profiles-daemon polkitd python3-gi python3-pyte pipewire-bin sound-theme-freedesktop tesseract-ocr tesseract-ocr-eng"
+apt_pkgs="gcc pkgconf libwayland-dev wayland-protocols git curl jq python3 fontconfig socat libglib2.0-bin file imagemagick cava playerctl network-manager bluez brightnessctl hypridle libnotify-bin xdg-user-dirs xdg-utils wl-clipboard cliphist ffmpeg xdg-desktop-portal-gtk grim slurp wf-recorder power-profiles-daemon polkitd python3-gi python3-pyte python3-pil fastfetch pipewire-bin wireplumber pipewire-pulse pulseaudio-utils sound-theme-freedesktop tesseract-ocr tesseract-ocr-eng"
 
 # Night mode is hyprsunset on Hyprland, and wlsunset everywhere else (niri, pleamar-wm): each is only wanted where its compositor is,
 # and wlsunset also where there is no Hyprland at all. A machine with Hyprland and pleamar-wm gets both. (Here `have` is not defined yet.)
@@ -95,6 +104,15 @@ $on_hypr && pacman_pkgs="$pacman_pkgs hyprsunset"
 if command -v niri > /dev/null 2>&1 || command -v pleamar-wm > /dev/null 2>&1 || ! $on_hypr; then
     pacman_pkgs="$pacman_pkgs wlsunset"
     apt_pkgs="$apt_pkgs wlsunset"
+fi
+# Sound: pipewire-audio is only PipeWire's audio plugins. Nothing plays without a session manager (wireplumber) to open the card,
+# and the shell's volume, mute and output picker are pactl, which needs a PulseAudio server (pipewire-pulse). A system that runs
+# PulseAudio itself already has both jobs done, and pipewire-pulse conflicts with it there, so the two are left out.
+if command -v pacman > /dev/null 2>&1 && pacman -Qi pulseaudio > /dev/null 2>&1; then
+    pacman_pkgs=$(printf '%s\n' $pacman_pkgs | grep -vxE 'wireplumber|pipewire-pulse' | tr '\n' ' ')
+fi
+if command -v dpkg > /dev/null 2>&1 && dpkg -s pulseaudio > /dev/null 2>&1; then
+    apt_pkgs=$(printf '%s\n' $apt_pkgs | grep -vxE 'wireplumber|pipewire-pulse' | tr '\n' ' ')
 fi
 
 assume_yes=false
@@ -364,7 +382,7 @@ ask_no() {
 [ "$(id -u)" -ne 0 ] || fail "run this as yourself, not as root: it installs into your home (and asks for sudo only for packages)"
 [ "$(uname -s)" = Linux ] || fail "Vitreus is a Linux (Wayland) shell"
 # The steps the bar counts (an install or update; --no-deps leaves out the first four after the check).
-if [ "$action" = install ]; then if $deps; then stage_total=13; else stage_total=9; fi; fi
+if [ "$action" = install ]; then if $deps; then stage_total=15; else stage_total=11; fi; fi      # (15 stages, 4 of them packages: the bar ended at "15/14")
 ui_start
 
 # ── uninstall ──────────────────────────────────────────────────────────────
@@ -373,6 +391,14 @@ if [ "$action" = uninstall ]; then
     if [ -f "$autostart" ] && grep -q 'vitreus.plm' "$autostart"; then
         run sed -i '/vitreus\.plm/d' "$autostart"
         say "removed its line from $autostart"
+    fi
+    # hypridle's config, if it is the link to Vitreus's: it would point into the folder about to go, and leave hypridle with no config. The file
+    # it replaced comes back. (Neither was done: a dangling link, and the person's own file left aside.)
+    idle_dst="$conf/hypr/hypridle.conf"
+    if [ -L "$idle_dst" ] && case "$(readlink -f "$idle_dst" 2> /dev/null)" in "$dest"/*) true ;; *) false ;; esac; then
+        run rm -f "$idle_dst"
+        if [ -f "$idle_dst.before-vitreus-idle" ]; then run mv "$idle_dst.before-vitreus-idle" "$idle_dst"; say "put your own $idle_dst back"
+        else say "removed $idle_dst, which was Vitreus's"; fi
     fi
     # The lock screen, the wallpaper transition and the desktop clock are scenes of their own, each with its line.
     if [ -f "$autostart" ] && grep -q 'vitreus/lockscreen/lockscreen.plm' "$autostart"; then
@@ -420,7 +446,8 @@ if [ "$action" = uninstall ]; then
     if [ -f "$nirikdl" ] && grep -q '^// >>> vitreus' "$nirikdl"; then
         tmp=$(mktemp)
         sed '/^\/\/ >>> vitreus/,/^\/\/ <<< vitreus/d' "$nirikdl" > "$tmp" && run sh -c "cat '$tmp' > '$nirikdl'"
-        rm -f "$tmp" "$conf/niri/niri_vitreus.kdl" "$conf/niri/vitreus.kdl"
+        rm -f "$tmp"
+        run rm -f "$conf/niri/niri_vitreus.kdl" "$conf/niri/vitreus.kdl"   # (under `run`: --dry-run really deleted them)
         say "removed Vitreus's lines from $nirikdl"
     fi
     if [ -f "$autostart" ] && grep -q -E '^# >>> vitreus \((pleamar-wm|session)\)' "$autostart"; then
@@ -470,6 +497,15 @@ if [ "$action" = uninstall ]; then
     if [ -L "$HOME/.local/bin/vitreus-report" ]; then run rm -f "$HOME/.local/bin/vitreus-report"; fi
     if [ -L "$HOME/.local/bin/vitreus-btnwait" ]; then run rm -f "$HOME/.local/bin/vitreus-btnwait"; fi
     if [ -f "$HOME/.local/bin/vitreus-inhibit" ]; then run rm -f "$HOME/.local/bin/vitreus-inhibit"; fi
+    if [ -L "$HOME/.local/bin/vitfetch" ]; then run rm -f "$HOME/.local/bin/vitfetch"; fi
+    # the terminal: the include line in Ghostty's config, and vitfetch's line in the shell's rc files (both marked)
+    if [ -f "$ghostty_conf" ] && grep -q 'vitreus/terminal/ghostty.conf' "$ghostty_conf"; then
+        run sed -i '/^# Vitreus: the terminal look/d; /vitreus\/terminal\/ghostty\.conf/d' "$ghostty_conf"
+        say "took the Vitreus look out of $ghostty_conf"
+    fi
+    for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$conf/fish/config.fish"; do
+        if [ -f "$rc" ] && grep -q '# vitreus: vitfetch' "$rc"; then run sed -i '/# vitreus: vitfetch/d' "$rc"; say "took vitfetch out of $rc"; fi
+    done
     if [ -L "$conf/hypr/hypr_vitreus.lua" ]; then run rm -f "$conf/hypr/hypr_vitreus.lua"; fi
     run rm -f "$conf/hypr/vitreus_monitors.lua" "$conf/hypr/vitreus_hypr.lua" "$conf/hypr/vitreus_colors.lua"
     if [ -d "$dest" ] && ask_no "delete $dest?"; then run rm -rf "$dest"; fi
@@ -482,8 +518,9 @@ fi
 trial_file="$data/pleamar/vitreus/test-restore"
 if [ "$action" = stop ]; then
     say "stopping Vitreus"
-    run pkill -f "vitreus-keep $dest/"
-    run pkill -f "pleamar --scene $dest/"
+    # (`|| true`: with nothing of Vitreus running, pkill's 1 ended the script under `set -e`, before the other shell was started again)
+    run pkill -f "vitreus-keep $dest/" || true
+    run pkill -f "pleamar --scene $dest/" || true
     if [ -f "$trial_file" ] && ! $dry; then
         sleep 1
         while IFS= read -r cmd; do
@@ -529,6 +566,15 @@ if [ "$action" = install ] && ! $force && ! $refresh && ! { [ -f "$autostart" ] 
     fi
 fi
 
+# SDDM, the login screen, goes in with the packages where the machine has no display manager at all (a fresh install): one that is
+# there (GDM, greetd, ly...) is the person's choice and is left alone, as is a machine that logs in on a TTY when told --no-login.
+want_sddm=false
+if $do_login && ! $refresh && ! command -v sddm > /dev/null 2>&1 && [ ! -e /etc/systemd/system/display-manager.service ] && [ ! -L /etc/systemd/system/display-manager.service ]; then
+    want_sddm=true
+    pacman_pkgs="$pacman_pkgs sddm"
+    apt_pkgs="$apt_pkgs sddm"
+fi
+
 # ── 1. packages ────────────────────────────────────────────────────────────
 if $deps; then
     stage "the packages"
@@ -541,7 +587,8 @@ if $deps; then
         elif [ -n "$missing" ]; then
             say "packages to install:$missing"
             if ask "install them with sudo pacman?"; then
-                run sudo pacman -S --needed --noconfirm $missing
+                # (one package missing from the repos, or a conflict, ended the whole install here, with no word of its own, under `set -e`)
+                run sudo pacman -S --needed --noconfirm $missing || warn "pacman could not install them all:$missing (install what it named yourself, then run this again)"
             else
                 warn "skipped: parts of Vitreus will stay quiet without them"
             fi
@@ -557,7 +604,7 @@ if $deps; then
             if [ -n "$helper" ]; then
                 say "from the AUR (with $helper):$aur_missing"
                 if ask "install them?"; then
-                    run "$helper" -S --needed --noconfirm $aur_missing
+                    run "$helper" -S --needed --noconfirm $aur_missing || warn "$helper could not build them all:$aur_missing (the shell works without them)"
                 fi
             else
                 warn "from the AUR, and no helper (yay, paru) was found:$aur_missing"
@@ -604,6 +651,7 @@ if $deps; then
     wl-clipboard    the launcher copying (wl-copy: results, snippets), and Capture copying a screenshot
     polkit, python-gobject  the authentication dialog (Vitreus asks for your password when something wants admin rights)
     python-pyte, SpaceMono Nerd Font  the Desk's terminal (pyte keeps its screen; the font is Space Grotesk's monospaced sibling)
+    fastfetch, python-pillow  vitfetch, the fetch (bin/vitfetch: fastfetch reads the system, Pillow draws the picture)
     pipewire (pw-play), sound-theme-freedesktop  the sounds notifications make
     tesseract       reading the text of a screenshot (Copy text, Ask), on the screenshot card, and in Snap (Copy text, Blur private info)
     grim, slurp     Capture's screenshots (slurp picks the region for a recording; Snap picks a screenshot's)
@@ -645,6 +693,19 @@ LIST
     # (Flatpaks, Firefox set to use portals) open no file picker. The journal says "the screenshot portal requires an access impl".
     if ! $dry && ! [ -f /usr/share/xdg-desktop-portal/portals/gtk.portal ]; then
         warn "xdg-desktop-portal-gtk is not installed: apps' screenshots, screen sharing and file pickers need it (sudo pacman -S xdg-desktop-portal-gtk on Arch, sudo apt install xdg-desktop-portal-gtk on Debian)"
+    fi
+    # Sound: the packages being there is not the same as it playing. The user services are not always on after an install (a
+    # minimal Arch install has PipeWire running and nothing else), so they are switched on here (no sudo), and then pactl is asked.
+    if ! $dry && have pactl && ! pactl info > /dev/null 2>&1; then
+        if ! $refresh && have systemctl; then
+            for u in wireplumber pipewire-pulse; do
+                systemctl --user cat "$u.service" > /dev/null 2>&1 && { run systemctl --user enable --now "$u.service" || warn "could not start $u: run  systemctl --user enable --now $u  yourself"; }
+            done
+            sleep 1
+        fi
+        pactl info > /dev/null 2>&1 || warn "no sound server answers (pactl info): sound, the volume slider and the output picker will not work. Install wireplumber and pipewire-pulse (sudo pacman -S wireplumber pipewire-pulse pipewire-alsa on Arch), then: systemctl --user enable --now wireplumber pipewire-pulse"
+    elif ! $dry && ! have pactl; then
+        warn "pactl is not installed: the volume slider and the output picker need it (it comes with pipewire-pulse on Arch, pulseaudio-utils on Debian)"
     fi
     have hyprctl || have niri || warn "Neither Hyprland nor niri was found. Vitreus needs a Wayland compositor with layer-shell; the list of running windows needs Hyprland or niri."
 
@@ -754,15 +815,24 @@ LIST
             # pleamar's installer brings the window manager (pleamar-wm) and Marea too unless told --alone: ask first.
             pleamar_args=""
             if $do_wm && ! ask "install pleamar-wm, the window manager, as well? (otherwise only pleamar, for Hyprland and other compositors)"; then
-                pleamar_args="-s -- --alone"
+                pleamar_args="--alone"
                 do_wm=false
             fi
             if $dry; then
-                would "run: curl -fsSL $pleamar_installer | sh $pleamar_args"
+                would "fetch $pleamar_installer and run it: sh install.sh $pleamar_args"
             else
                 have curl || fail "curl is needed to fetch pleamar's installer"
+                # Fetched to a file and run with the keyboard as its input, not piped into sh: on a pipe pleamar's installer cannot ask,
+                # so where its build packages (rust, clang...) are missing it only prints the command for them and stops.
+                pleamar_sh=$(mktemp) || fail "no temporary file for pleamar's installer"
+                curl -fsSL "$pleamar_installer" -o "$pleamar_sh" || { rm -f "$pleamar_sh"; fail "pleamar's installer could not be fetched from $pleamar_installer"; }
                 # shellcheck disable=SC2086
-                curl -fsSL "$pleamar_installer" | sh $pleamar_args || fail "pleamar's installer failed (see above); Vitreus needs it"
+                pleamar_rc=0
+                if tty_ok; then sh "$pleamar_sh" $pleamar_args < /dev/tty || pleamar_rc=$?
+                else sh "$pleamar_sh" $pleamar_args < /dev/null || pleamar_rc=$?
+                fi
+                rm -f "$pleamar_sh"
+                [ "$pleamar_rc" -eq 0 ] || fail "pleamar's installer failed (see above); Vitreus needs it"
                 pv=$( { pleamar --version 2> /dev/null || "$HOME/.local/bin/pleamar" --version 2> /dev/null; } | sed -n 's/^pleamar \([0-9][0-9.]*\).*/\1/p' | head -1)
                 if [ -n "$pv" ]; then say "pleamar is installed now ($pv)"
                 else warn "pleamar's installer ended, but no pleamar answers: check that ~/.local/bin is in your PATH"
@@ -776,7 +846,8 @@ LIST
     # ── 3. the font ──
     # (Settings > About runs this with --refresh, which downloads what a theme draws in without asking: a theme added by an update has its typeface.)
     stage "the fonts"
-    ask_font() { $refresh && return 0; ask "$1"; }
+    # The fonts are not asked for: they go into your home without sudo, and a theme without its typeface draws in the wrong one. (--no-deps skips them.)
+    ask_font() { return 0; }
     if $deps; then
     if have fc-list && fc-list 2> /dev/null | grep -qi 'space grotesk'; then
         say "the Space Grotesk font is installed"
@@ -787,6 +858,21 @@ LIST
             mkdir -p "$fonts"
             curl -fsSL -m 120 "$font_url" -o "$fonts/SpaceGrotesk[wght].ttf" || warn "could not download the font: install Space Grotesk yourself"
             have fc-cache && fc-cache -f "$fonts" > /dev/null 2>&1 || true
+        fi
+    fi
+    # Space Mono, the terminal's font (terminal/ghostty.conf). "SpaceMono Nerd Font" from the packages is a different name, so it is not taken for it.
+    if have fc-list && fc-list 2> /dev/null | grep -qi 'space mono'; then
+        say "the Space Mono font is installed"
+    elif ask_font "install the Space Mono font, for the terminal (into $fonts_spacemono)?"; then
+        if $dry; then
+            would "download $spacemono_url/SpaceMono-{Regular,Bold,Italic,BoldItalic}.ttf"
+        else
+            mkdir -p "$fonts_spacemono"
+            for w in Regular Bold Italic BoldItalic; do
+                curl -fsSL -m 120 "$spacemono_url/SpaceMono-$w.ttf" -o "$fonts_spacemono/SpaceMono-$w.ttf" || warn "could not download Space Mono $w: the terminal will use SpaceMono Nerd Font"
+            done
+            curl -fsSL -m 120 "$spacemono_url/OFL.txt" -o "$fonts_spacemono/OFL.txt" 2> /dev/null || true
+            have fc-cache && fc-cache -f "$fonts_spacemono" > /dev/null 2>&1 || true
         fi
     fi
     # The Retro theme's Audiowide and the UwU theme's Mochiy Pop One: what Settings > Theme draws the shell in on those themes (the font picker can
@@ -1002,6 +1088,7 @@ if [ -x "$dest/bin/vitreus-clipimg" ] || $dry; then
     [ -x "$dest/bin/vitreus-report" ] && run ln -sf "$dest/bin/vitreus-report" "$HOME/.local/bin/vitreus-report"
     # A desktop widget carried over to another monitor hears the mouse button come up through this (the compositor stops telling it at the edge).
     [ -x "$dest/bin/vitreus-btnwait" ] && run ln -sf "$dest/bin/vitreus-btnwait" "$HOME/.local/bin/vitreus-btnwait"
+    [ -x "$dest/bin/vitfetch" ] && run ln -sf "$dest/bin/vitfetch" "$HOME/.local/bin/vitfetch"       # the fetch: a pixel-art picture with the system's details over it
     # Files among the desktop's programs: its icon and its entry always, and, when asked, the file manager (folders open in it, and «Show in folder» in other programs answer with it): files/integrate.sh
     # (--uninstall and `sh files/integrate.sh --remove` take it away and put the old folder opener back). Not on a trial next to another shell, and not on --refresh, which asks nothing.
     if [ -f "$dest/files/integrate.sh" ]; then
@@ -1048,46 +1135,78 @@ fi
 stage "the key binds"
 hyprdir="$conf/hypr"
 hyprlua="$hyprdir/hyprland.lua"
+# The line that starts the shell on Hyprland: pleamar runs ~/.config/pleamar/autostart (vitreus.plm and the daemons). Hyprland's PATH,
+# from a display manager, has no ~/.local/bin, so it is put in front.
+hypr_autostart='hl.on("hyprland.start", function () hl.exec_cmd("PATH=\"$HOME/.local/bin:$PATH\" pleamar --autostart") end)'
 if $do_binds; then
+    # A Hyprland that has never been logged in to has no hyprland.lua yet: it writes its stock one on the first login. Without one here,
+    # the shell would never be started on Hyprland, so the stock one is put in place now (what Hyprland would have written) and the
+    # lines go into it. A hyprland.conf of the person's own is left alone.
+    if [ ! -f "$hyprlua" ] && [ ! -f "$hyprdir/hyprland.conf" ] && { have Hyprland || have hyprland; }; then
+        stock=""
+        for f in /usr/share/hypr/hyprland.lua /usr/local/share/hypr/hyprland.lua; do [ -f "$f" ] && { stock="$f"; break; }; done
+        if [ -n "$stock" ]; then
+            run mkdir -p "$hyprdir"
+            run cp "$stock" "$hyprlua"
+            $dry || say "no $hyprlua yet (Hyprland writes it on the first login): made it from the stock one, $stock"
+        else
+            warn "Hyprland is installed but there is no $hyprlua, and no stock one to start it from: log in to Hyprland once, then run this again, or Vitreus will not start on Hyprland"
+        fi
+    fi
     if [ ! -f "$hyprlua" ]; then
-        say "no $hyprlua, so no key binds set up (hyprland.conf users: bind a key to  pleamar --say vitreus \"emit settings_toggle\" )"
+        if [ -f "$hyprdir/hyprland.conf" ]; then
+            warn "Hyprland reads $hyprdir/hyprland.conf, which this does not edit: add  exec-once = ~/.local/bin/pleamar --autostart  to it, or Vitreus will not start on Hyprland"
+        elif ! $dry; then
+            say "no $hyprlua, so no key binds set up (hyprland.conf users: bind a key to  pleamar --say vitreus \"emit settings_toggle\" )"
+        fi
     elif grep -q 'hypr_vitreus' "$hyprlua"; then
         say "hyprland.lua already loads hypr_vitreus.lua"
         run ln -sf "$dest/hypr_vitreus.lua" "$hyprdir/hypr_vitreus.lua"
         # An install from before a file existed never loaded it (vitreus_colors.lua keeps the room the left bar takes; without
         # it, every reload of the config gives the gaps back): add what is missing, inside the block if it is there.
-        for mod in vitreus_monitors vitreus_hypr vitreus_colors; do
-            grep -q "$mod" "$hyprlua" && continue
-            if $dry; then
-                would "add pcall(require, \"$mod\") to $hyprlua"
+        # An install from before the shell was started from here never started it at all on Hyprland: that line too.
+        for mod in autostart vitreus_monitors vitreus_hypr vitreus_colors; do
+            if [ "$mod" = autostart ]; then
+                grep -q 'pleamar --autostart' "$hyprlua" && continue
+                line="$hypr_autostart"
             else
+                grep -q "$mod" "$hyprlua" && continue
                 line="pcall(require, \"$mod\")"
+            fi
+            if $dry; then
+                would "add $line to $hyprlua"
+            else
                 if grep -q '^-- <<< vitreus' "$hyprlua"; then
                     tmp=$(mktemp)
-                    awk -v l="$line" '/^-- <<< vitreus/ { print l } { print }' "$hyprlua" > "$tmp" && cat "$tmp" > "$hyprlua"
+                    # through the environment, not -v: awk -v reads backslashes as escapes, and the autostart line has \" in it
+                    l="$line" awk '/^-- <<< vitreus/ { print ENVIRON["l"] } { print }' "$hyprlua" > "$tmp" && cat "$tmp" > "$hyprlua"
                     rm -f "$tmp"
                 else
-                    echo "$line" >> "$hyprlua"
+                    printf '%s\n' "$line" >> "$hyprlua"
                 fi
                 say "added $line to $hyprlua"
             fi
         done
-    elif ask "load Vitreus's key binds (SUPER + L, SUPER + Space) from $hyprlua?"; then
+    # (the question named two keys, and the file takes about twenty, SUPER + C, Hyprland's own "close window", among them: all are listed first)
+    elif say "Vitreus's key binds take these keys (each one's line is in $dest/hypr_vitreus.lua):" && \
+         { sed -n 's/^hl\.bind("\([^"]*\)".*/\1/p' "$dest/hypr_vitreus.lua" | awk '{ s = (l == "" ? "" : l ", ") $0; if (length(s) > 90) { print "    " l ","; l = $0 } else l = s } END { if (l != "") print "    " l }'; true; } && \
+         ask "load them from $hyprlua?"; then
         run ln -sf "$dest/hypr_vitreus.lua" "$hyprdir/hypr_vitreus.lua"
         if $dry; then
-            would "back up $hyprlua and add four pcall(require, ...) lines to its end"
+            would "back up $hyprlua and add the line that starts the shell and four pcall(require, ...) lines to its end"
         else
             cp "$hyprlua" "$hyprlua.before-vitreus"
             {
                 echo ""
                 echo "-- >>> vitreus (added by its installer; ./install.sh --uninstall takes it out)"
+                grep -q 'pleamar --autostart' "$hyprlua" || printf '%s\n' "$hypr_autostart"
                 echo 'pcall(require, "hypr_vitreus")'
                 grep -q 'vitreus_monitors' "$hyprlua" || echo 'pcall(require, "vitreus_monitors")'
                 grep -q 'vitreus_hypr' "$hyprlua" || echo 'pcall(require, "vitreus_hypr")'
                 grep -q 'vitreus_colors' "$hyprlua" || echo 'pcall(require, "vitreus_colors")'
                 echo "-- <<< vitreus"
             } >> "$hyprlua"
-            if [ -n "$HYPRLAND_INSTANCE_SIGNATURE" ]; then
+            if [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]; then
                 say "added to $hyprlua (the old one is $hyprlua.before-vitreus); Hyprland reloads it by itself"
             else
                 say "added to $hyprlua (the old one is $hyprlua.before-vitreus), for when you log in to Hyprland; this session is not Hyprland, so it changes nothing now"
@@ -1122,7 +1241,7 @@ if have niri && $do_binds; then
             {
                 echo ""
                 echo "// >>> vitreus (added by its installer; ./install.sh --uninstall takes it out)"
-                grep -q 'pleamar.*--autostart' "$nirikdl" || echo 'spawn-at-startup "pleamar" "--autostart"'
+                grep -q 'pleamar.*--autostart' "$nirikdl" || echo 'spawn-at-startup "sh" "-c" "PATH=\"$HOME/.local/bin:$PATH\" exec pleamar --autostart"'   # (with ~/.local/bin on its PATH: niri'"'"'s own may not have it, and then nothing started)
                 echo 'include "niri_vitreus.kdl"'
                 echo 'include "vitreus.kdl"'
                 echo "// <<< vitreus"
@@ -1142,6 +1261,9 @@ line="vitreus-keep $dest/vitreus.plm \"\$HOME/.local/share/pleamar/vitreus/vitre
 lockline="PLEAMAR_SWAPCHAIN=1 vitreus-keep $dest/lockscreen/lockscreen.plm"
 transline="vitreus-keep $dest/wptrans/wptrans.plm"
 widgetsline="vitreus-keep $dest/desktopwidgets/desktopwidgets.plm"
+# Whether the shell starts with the desktop: the lock screen, the widgets and the daemons are added only then. (They were added after a "no" as
+# well, and the next login had a glass clock and an idle lock with no shell, and on pleamar-wm a session with no bar.)
+shell_auto=false
 if $do_autostart; then
     # Lines from before the keeper started the scenes straight, once: they go through it now (with or without VAR=value words in front: a line that
     # keeps the shell outside the keeper is one that nothing starts again when Settings stops it to apply a theme's font).
@@ -1154,10 +1276,15 @@ if $do_autostart; then
     fi
     if [ -f "$autostart" ] && grep -q 'vitreus.plm' "$autostart"; then
         say "it is already in $autostart"
+        shell_auto=true
     elif ask "start Vitreus with the desktop (add a line to $autostart)?"; then
         run mkdir -p "$(dirname "$autostart")"
         if $dry; then would "add to $autostart: $line"; else printf '%s\n' "$line" >> "$autostart"; fi
+        shell_auto=true
     fi
+  if ! $shell_auto; then
+    say "nothing else is added to $autostart: the lock screen, the widgets and the daemons start with the shell"
+  else
     # The lock screen is a scene of its own (a session lock has to be its own program, so that restarting the shell cannot unlock
     # the session), and the lock buttons and SUPER + L only work while it runs: it always starts with the desktop.
     if [ -f "$autostart" ] && grep -q "^vitreus-keep $dest/lockscreen/lockscreen\.plm" "$autostart"; then
@@ -1194,6 +1321,7 @@ if $do_autostart; then
         if $dry; then would "add to $autostart: $widgetsline"; else printf '%s\n' "$widgetsline" >> "$autostart"; fi
         say "the desktop clock and system monitor start with the desktop too (a line in $autostart); \"Desktop clock: toggle\" and \"Desktop system monitor: toggle\" in the launcher show or hide them"
     fi
+  fi
     # The UwU cursor trail: a scene of its own that only draws while the theme is UwU. The shell starts it when UwU is chosen and stops it on any
     # other theme (see push_look in vitreus.luau), so it no longer starts with the desktop: a line from before is taken out.
     if [ -f "$autostart" ] && grep -q 'cursortrail/cursortrail.plm' "$autostart"; then
@@ -1209,7 +1337,7 @@ fi
 # search has nothing without it). No `wm:` prefix: pleamar runs these lines on Hyprland (`pleamar --autostart`) and in pleamar-wm
 # alike. Each is guarded, so one that is already running (yours, or one from hyprland.lua) is not started twice; the guard
 # matches on the process name, because pgrep -f would find the very `sh -c` that runs the line.
-if $do_autostart; then
+if $do_autostart && $shell_auto; then
     if [ -f "$autostart" ] && grep -q '^# >>> vitreus (session)' "$autostart"; then
         say "the daemon lines are already in $autostart"
     else
@@ -1238,7 +1366,7 @@ fi
 # The Idle page only writes idle.conf in the data folder; hypridle waits for those times only if ~/.config/hypr/hypridle.conf `source`s it.
 # Without that line the sliders do nothing (an old hard-coded lock still fires, Never or not). So: no file, or the stock one of an earlier
 # version, gets Vitreus's (kept in a backup); a file of the user's own is left alone, but the line it needs is said out loud.
-if $do_autostart && [ -f "$dest/pleamar-wm/hypridle.conf" ]; then
+if $do_autostart && $shell_auto && [ -f "$dest/pleamar-wm/hypridle.conf" ]; then
     idle_src="$dest/pleamar-wm/hypridle.conf"
     idle_dst="$conf/hypr/hypridle.conf"
     if [ -L "$idle_dst" ] && [ "$(readlink -f "$idle_dst")" = "$(readlink -f "$idle_src")" ]; then
@@ -1268,7 +1396,8 @@ if $do_wm && [ -d "$wmdir" ] && { have pleamar-wm || [ -x "$HOME/.local/bin/plea
     # `wm:` lines are read by pleamar-wm's session only. Marea is the shell pleamar-wm comes with: with Vitreus as the bar,
     # she and swaybg (which needs a wallpaper file that is not there) are turned off, not deleted.
     # (The daemons Vitreus needs are started for every compositor, in the section above.)
-    if $do_autostart && [ -f "$autostart" ] && ! $dry; then
+    # (only with Vitreus starting in its place: after a "no" it turned the other bar off as well, and pleamar-wm had none at all)
+    if $do_autostart && $shell_auto && [ -f "$autostart" ] && ! $dry; then
         sed -i -e 's/^marea start\([[:space:]].*\)\{0,1\}$/# \0  (turned off by Vitreus: it is the bar now)/' \
                -e 's/^wm: swaybg\(.*\)$/# wm: swaybg\1  (turned off by Vitreus: it is the bar now)/' "$autostart"
     fi
@@ -1339,6 +1468,63 @@ if $do_login && ! $refresh && [ -x "$dest/sddm/install.sh" ] && { have sddm || [
         run_kept sh "$dest/sddm/install.sh" $login_flags || warn "could not: run  sh $dest/sddm/install.sh  yourself"
     fi
 fi
+# SDDM is turned on for the next boot where no display manager is (it is not started now: that would take the screen from this session).
+# Another one that is enabled is left as it is.
+if $do_login && ! $refresh && have sddm && have systemctl; then
+    if systemctl is-enabled --quiet sddm 2> /dev/null; then
+        say "SDDM is enabled: the machine starts at the login screen"
+    elif [ -e /etc/systemd/system/display-manager.service ] || [ -L /etc/systemd/system/display-manager.service ]; then
+        say "another display manager is enabled ($(basename "$(readlink /etc/systemd/system/display-manager.service 2> /dev/null)" .service)), so SDDM is left off: sudo systemctl enable --force sddm  switches to it"
+    elif ask "enable SDDM, so the machine starts at the login screen (needs sudo)?"; then
+        run sudo systemctl enable sddm && { $dry || say "SDDM is enabled: it shows from the next boot"; } || warn "could not: run  sudo systemctl enable sddm  yourself"
+    fi
+elif $want_sddm && ! have sddm && ! $dry; then
+    warn "SDDM was not installed, so there is no login screen: install the sddm package, then run this again"
+fi
+
+# ── the terminal ───────────────────────────────────────────────────────────
+# Ghostty in the Vitreus look (terminal/ghostty.conf: Space Mono, frosted, a cursor trail), by one `config-file` line at the top of the person's own
+# config: Ghostty reads an included file last, so its settings replace the same ones there, and taking the line out undoes it. And vitfetch
+# (bin/vitfetch) each time Ghostty or kitty opens a shell: a marked line in the rc file of the person's shell, asked when either is installed (both show
+# its picture). Both asked; --refresh (an update from Settings) leaves them alone.
+stage "the terminal"
+if ! $refresh; then
+    if have ghostty; then
+        if [ -f "$ghostty_conf" ] && grep -q 'vitreus/terminal/ghostty.conf' "$ghostty_conf"; then
+            say "Ghostty has the Vitreus look ($dest/terminal/ghostty.conf, included from $ghostty_conf)"
+        elif ask "give Ghostty the Vitreus look: Space Mono, frosted glass and a cursor trail (it replaces those settings in $ghostty_conf; the rest stays)?"; then
+            if $dry; then
+                would "add  config-file = ?$dest/terminal/ghostty.conf  to the top of $ghostty_conf"
+            else
+                mkdir -p "$(dirname "$ghostty_conf")"
+                [ -f "$ghostty_conf" ] && cp "$ghostty_conf" "$ghostty_conf.before-vitreus"
+                { printf '# Vitreus: the terminal look (./install.sh --uninstall takes these two lines out)\nconfig-file = ?%s\n\n' "$dest/terminal/ghostty.conf"
+                  if [ -f "$ghostty_conf" ]; then cat "$ghostty_conf"; fi; } > "$ghostty_conf.new" && mv "$ghostty_conf.new" "$ghostty_conf"   # (`if`: with no config yet the group ended in 1 and the `mv` never ran)
+                say "Ghostty has the Vitreus look: it shows in a new window (your config as it was: $ghostty_conf.before-vitreus)"
+            fi
+        fi
+    fi
+    if have ghostty || have kitty; then
+        case "$(basename "${SHELL:-sh}")" in
+            bash) rc="$HOME/.bashrc"; vf_line='case "$TERM" in xterm-ghostty|xterm-kitty) [ -x "$HOME/.local/bin/vitfetch" ] && "$HOME/.local/bin/vitfetch" ;; esac  # vitreus: vitfetch' ;;
+            zsh)  rc="$HOME/.zshrc";  vf_line='case "$TERM" in xterm-ghostty|xterm-kitty) [ -x "$HOME/.local/bin/vitfetch" ] && "$HOME/.local/bin/vitfetch" ;; esac  # vitreus: vitfetch' ;;
+            fish) rc="$conf/fish/config.fish"; vf_line='status is-interactive; and contains -- "$TERM" xterm-ghostty xterm-kitty; and test -x ~/.local/bin/vitfetch; and ~/.local/bin/vitfetch  # vitreus: vitfetch' ;;
+            *)    rc="" ;;
+        esac
+        if [ -z "$rc" ]; then
+            say "vitfetch is in ~/.local/bin: add it to your shell's start-up file to see it in each new terminal"
+        elif [ -f "$rc" ] && grep -q '# vitreus: vitfetch' "$rc"; then
+            say "vitfetch shows when a terminal opens ($rc)"
+        elif ask "show vitfetch, the Vitreus fetch, each time a terminal opens (one line in $rc)?"; then
+            if $dry; then would "add to $rc:  $vf_line"; else
+                mkdir -p "$(dirname "$rc")"
+                printf '\n%s\n' "$vf_line" >> "$rc"
+                say "vitfetch shows in each new Ghostty or kitty window (vitfetch --from IMAGE makes it your own picture)"
+            fi
+        fi
+    fi
+    have ghostty || say "Ghostty is not installed: with it (pacman -S ghostty), run this again for the Vitreus terminal look"
+fi
 
 # ── services it talks to ───────────────────────────────────────────────────
 stage "the services"
@@ -1357,7 +1543,8 @@ if $trial; then
     else
         [ -n "${WAYLAND_DISPLAY:-}" ] || fail "--test starts Vitreus on the screen: run it from inside your Wayland session"
         mkdir -p "$data/pleamar/vitreus"
-        : > "$trial_file"
+        # (kept if a --test before this one already wrote it: started again with Quickshell stopped, it was emptied, and --stop had nothing to bring back)
+        [ -s "$trial_file" ] || : > "$trial_file"
         # Remember how each running Quickshell was started (qs -c name ...), so --stop can start it again.
         for pid in $(pgrep -x qs; pgrep -x quickshell); do
             args=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2> /dev/null | sed 's/ $//')
@@ -1366,7 +1553,7 @@ if $trial; then
         done
         if [ -s "$trial_file" ]; then
             say "stopping your Quickshell (./install.sh --stop starts it again)"
-            pkill -x qs; pkill -x quickshell
+            pkill -x qs || true; pkill -x quickshell || true   # (one of the two names is never running, and under `set -e` that ended the script here)
             sleep 1
         fi
         export PATH="$HOME/.local/bin:$PATH"
@@ -1381,9 +1568,14 @@ heading "Start it"
 row "now" "$line"
 row "the lock screen" "$lockline"
 row "hexagon dissolve" "$transline"
-row "with the desktop" "autostart is read by pleamar's own session; on Hyprland run \`pleamar --autostart\`:"
-row "" "hyprland.lua:   hl.on(\"hyprland.start\", function () hl.exec_cmd(\"PATH=\\\"\$HOME/.local/bin:\$PATH\\\" pleamar --autostart\") end)"
-row "" "hyprland.conf:  exec-once = ~/.local/bin/pleamar --autostart   (Hyprland's PATH may lack ~/.local/bin)"
+# (only when hyprland.lua does not start it already: followed anyway, the autostart ran twice, and its guards raced into a second hypridle)
+if [ -f "${hyprlua:-}" ] && grep -q 'pleamar --autostart' "$hyprlua"; then
+    row "with the desktop" "hyprland.lua starts it already (pleamar --autostart); pleamar-wm reads $autostart itself"
+else
+    row "with the desktop" "autostart is read by pleamar's own session; on Hyprland run \`pleamar --autostart\`:"
+    row "" "hyprland.lua:   hl.on(\"hyprland.start\", function () hl.exec_cmd(\"PATH=\\\"\$HOME/.local/bin:\$PATH\\\" pleamar --autostart\") end)"
+    row "" "hyprland.conf:  exec-once = ~/.local/bin/pleamar --autostart   (Hyprland's PATH may lack ~/.local/bin)"
+fi
 row "pleamar-wm" "log out and choose «pleamar-wm» in the login screen (SDDM: click the session name under the password field)"
 heading "Good to know"
 row "keys (with the binds)" "SUPER + Space launcher, SUPER + SHIFT + Space settings, SUPER + B wallpaper picker, SUPER + L lock (see lockscreen/README.md)"

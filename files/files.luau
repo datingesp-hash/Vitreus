@@ -76,6 +76,29 @@ local function date_text(t)
     if m <= 2 then y = y + 1 end
     return string.format("%d %s %d", d, MONTHS[m], y)
 end
+-- In the list: today's and yesterday's by name, this year's without the year, older ones without the hour.
+local day_memo = { at = -1 }
+local function short_date(t)
+    t = math.floor(tonumber(t) or 0)
+    local ok, now = pcall(os.time)
+    if not ok or type(now) ~= "number" then return date_text(t) end
+    if math.floor(now / 60) ~= day_memo.at then
+        local ok2, today = pcall(os.date, "%Y%j", now)
+        local ok3, yday = pcall(os.date, "%Y%j", now - 86400)
+        if not (ok2 and ok3 and type(today) == "string") then return date_text(t) end
+        day_memo = { at = math.floor(now / 60), today = today, yday = yday, year = today:sub(1, 4) }
+    end
+    local ok4, day = pcall(os.date, "%Y%j", t)
+    if not ok4 or type(day) ~= "string" then return date_text(t) end
+    local fmt
+    if day == day_memo.today then fmt = "Today, %H:%M"
+    elseif day == day_memo.yday then fmt = "Yesterday, %H:%M"
+    elseif day:sub(1, 4) == day_memo.year and t <= now then fmt = "%d %b, %H:%M"
+    else fmt = "%d %b %Y" end
+    local ok5, v = pcall(os.date, fmt, t)
+    if ok5 and type(v) == "string" and v ~= "" then return (v:gsub("^0", "")) end
+    return date_text(t)
+end
 local function commas(n)
     local t = tostring(math.floor(tonumber(n) or 0))
     local out = t:reverse():gsub("(%d%d%d)", "%1,"):reverse()
@@ -151,7 +174,7 @@ for kind, list in pairs({
     code = "lua luau py js ts tsx jsx rs c h cpp hpp cc go java kt sh bash zsh fish json toml yaml yml xml html css scss plm md rb php cs swift sql conf cfg ini txt log csv tsv qml rst tex",
     archive = "zip tar gz xz zst bz2 7z rar tgz iso lz4 cab deb rpm",
     doc = "doc docx odt ods odp xls xlsx ppt pptx rtf epub mobi djvu pages numbers key",
-    exec = "appimage desktop exe msi run bin",
+    exec = "appimage desktop exe msi run",
 }) do
     for e in list:gmatch("%S+") do EXT[e] = kind end
 end
@@ -328,7 +351,8 @@ function F.set_status()
         local where = ""
         if s.mode == "deep" or s.list then where = " · " .. dirname(e.path)
         elseif e.orig then where = " · from " .. dirname(e.orig) end
-        text.status = (e.dir and e.name or (e.name .. " · " .. size_text(e.size))) .. where
+        local much = e.dir and F.count_text(e) or size_text(e.size)
+        text.status = (much == "" and e.name or (e.name .. " · " .. much)) .. where
     else
         local total, dirs, files = 0, 0, 0
         for _, e in ipairs(list) do
@@ -393,7 +417,7 @@ local function thumb_batch()
     if not vt_ok or s.vt_busy then return false end
     local batch, rest = {}, {}
     for _, e in ipairs(s.queue) do
-        local stale = dirname(e.path) ~= s.path and s.mode == nil
+        local stale = dirname(e.path) ~= s.path and s.mode == nil and not s.list   -- (Recent and Starred hold files of many folders: every one was "stale", and no thumbnail was ever made there)
         if e.ik == 1 and not e.vt_failed and not stale and #batch < VT_BATCH then batch[#batch + 1] = e else rest[#rest + 1] = e end
     end
     if #batch == 0 then return false end
@@ -454,7 +478,7 @@ function F.pump()
         local e = table.remove(s.queue, at)
         local name = thumb_name(e)
         local out = tdir .. "/" .. name
-        if dirname(e.path) ~= s.path and s.mode == nil then
+        if dirname(e.path) ~= s.path and s.mode == nil and not s.list then
             s.pending[e.path] = nil            -- the folder has changed since: not wanted any more
         else
             s.making = s.making + 1
@@ -597,7 +621,7 @@ local function cell(i, e)
         at = i - 1, name = e.name, ik = e.ik, thumb = th or "", ["has.thumb"] = th ~= nil and th ~= false, picked = s.picked[e.path] == true, hidden = e.hidden,
         cut = s.clip ~= nil and s.clip.cut and s.clip.set[e.path] == true, cur = s.cursor == i,
         link = e.link == true, broken = e.broken == true, star = s.stars[e.path] == true,
-        size = e.dir and "" or size_text(e.size), date = e.deld or date_text(e.mtime), kind = kind_text(e),
+        size = e.dir and F.count_text(e) or size_text(e.size), date = e.deld or short_date(e.mtime), kind = kind_text(e),
     }
 end
 
@@ -651,10 +675,64 @@ function F.prime_kinds()
     end)
 end
 
+-- How many things each folder on screen holds (hidden ones only when they are shown): one `find` for all of them, and what it said is kept, so that a folder looked at again says it at once.
+s.counts = {}
+function F.count_text(e)
+    local n = e.count or s.counts[e.path]
+    if not n then return "" end
+    if n == 0 then return "Empty" end
+    return n == 1 and "1 item" or (commas(n) .. " items")
+end
+function F.forget_counts()
+    s.counts = {}
+    for _, e in ipairs(s.all or {}) do e.count, e.count_done = nil, nil end
+    for _, e in ipairs(s.results or {}) do e.count, e.count_done = nil, nil end
+end
+function F.prime_counts()
+    if s.count_busy then return end
+    local c = cols()
+    local from = s.first * c + 1
+    local upto = math.min(#s.items, (s.first + row_window()) * c)
+    local todo = {}
+    local function want(e)
+        if e and e.dir and not e.broken and not e.count_done and #todo < 40 then todo[#todo + 1] = e end
+    end
+    if s.view == "lines" then
+        for i = from, upto do want(s.items[i]) end
+    else
+        for _, e in ipairs(s.items) do if s.picked[e.path] then want(e) end end       -- (the tiles do not say it: only the bar does, of the one chosen)
+    end
+    if #todo == 0 then return end
+    s.count_busy = true
+    local args = { "-H" }
+    local by = {}
+    for _, e in ipairs(todo) do args[#args + 1] = e.path; e.count_done = true; by[e.path] = 0 end
+    for _, x in ipairs({ "-mindepth", "1", "-maxdepth", "1" }) do args[#args + 1] = x end
+    if not s.hidden then args[#args + 1] = "-not"; args[#args + 1] = "-name"; args[#args + 1] = ".*" end
+    args[#args + 1] = "-printf"; args[#args + 1] = "%H\n"
+    run("find", args, function(out, code)
+        s.count_busy = false
+        for line in (out or ""):gmatch("[^\n]+") do
+            if by[line] then by[line] = by[line] + 1 end
+        end
+        local changed = false
+        for _, e in ipairs(todo) do
+            local n = by[e.path]
+            if n > 0 or code == 0 then          -- (a folder that cannot be read says nothing, not "Empty")
+                if s.counts[e.path] ~= n then changed = true end
+                e.count = n
+                s.counts[e.path] = n
+            end
+        end
+        if changed then F.flush_later() else F.prime_counts() end
+    end)
+end
+
 function F.show_rows()
     carry_all = nil
     F.prime_thumbs()
     F.prime_kinds()
+    F.prime_counts()
     local c = cols()
     local n = #s.items
     local total = math.ceil(n / c)
@@ -869,10 +947,27 @@ local go_seq = 0          -- each going has a number: the answer of one that was
 function F.reset_search()
     if s.mode then s.mode, s.results, s.qtext = nil, nil, ""; text.sq = ""; fact.searching = false end       -- (a search belongs to the folder it was made in)
 end
+-- Where you were in each folder you have left (how far down, and what was chosen): Back, Forward and a tab put you there again.
+s.seen = {}
+function F.remember_place()
+    if s.path == "" then return end
+    local names = {}
+    for _, e in ipairs(s.items) do if s.picked[e.path] then names[e.path] = true end end
+    local cur = s.cursor and s.items[s.cursor]
+    s.seen[s.path] = { scroll = s.scroll, picked = names, cur = cur and cur.path, view = s.view }
+end
 function F.after_list(path, how, then_pick)
     s.items = visible()
     s.picked = {}
     s.anchor, s.cursor = nil, nil
+    local was = (how == "nav" or how == "tab") and s.seen[path] or nil
+    if was then
+        then_pick = nil
+        for i, e in ipairs(s.items) do
+            if was.picked[e.path] then s.picked[e.path] = true; s.anchor = s.anchor or i end
+            if was.cur == e.path then s.cursor = i end
+        end
+    end
     if then_pick then
         for i, e in ipairs(s.items) do
             if e.name == then_pick then s.picked[e.path] = true; s.anchor = i; s.cursor = i end
@@ -890,6 +985,16 @@ function F.after_list(path, how, then_pick)
     F.show_free()
     fact.ready = true
     if then_pick and s.cursor then F.ensure_visible(s.cursor) end
+    if was and was.view == s.view and was.scroll > 0 then
+        -- (after the scene has put the new folder at its top, which it does when `gen` moves)
+        local mine = go_seq
+        after(60, function()
+            if mine ~= go_seq or s.path ~= path then return end
+            F.scroll_to(was.scroll)
+            s.first = math.max(0, math.floor(s.scroll / row_h()) - 1)
+            F.show_rows()
+        end)
+    end
 end
 
 function F.go(path, how, then_pick, on_fail)
@@ -910,6 +1015,7 @@ function F.go(path, how, then_pick, on_fail)
                 s.back[#s.back + 1] = s.path
                 s.fwd = {}
             end
+            if s.path ~= path then F.remember_place() end
             s.path = path
             s.list = nil
             fact["in.trash"] = path == s.data .. "/Trash/files"
@@ -938,6 +1044,7 @@ function F.go_list(which, how)
             s.back[#s.back + 1] = s.path
             s.fwd = {}
         end
+        if s.path ~= which then F.remember_place() end
         s.path = which
         s.list = which == "recent:" and "recent" or "starred"
         fact["in.trash"] = false
@@ -1222,13 +1329,13 @@ function F.build_places(found)
     s.places[#s.places + 1] = { name = "DEVICES", kind = 1 }
     s.places[#s.places + 1] = { name = "Computer", path = "/", pk = 3 }
     for _, d in ipairs(s.devices) do
-        s.places[#s.places + 1] = { name = d.name, path = d.path or ("dev:" .. d.dev), pk = d.removable and 14 or 9, kind = 2, eject = d.eject, use = d.use, dev = d.dev, parent = d.parent, mounted = d.path ~= nil }
+        s.places[#s.places + 1] = { name = d.name, path = d.path or ("dev:" .. d.dev), pk = d.removable and 14 or 9, kind = 2, eject = d.eject, use = d.use, dev = d.dev, parent = d.parent, removable = d.removable, mounted = d.path ~= nil }
     end
     s.places[#s.places + 1] = { name = "NETWORK", kind = 1 }
     for _, n in ipairs(s.nets) do
         s.places[#s.places + 1] = { name = n.name, path = n.path, pk = 13, kind = 0, eject = not n.sys, net = true, sys = n.sys }
     end
-    s.places[#s.places + 1] = { name = "Connect to server…", path = "connect:", pk = 15 }
+    s.places[#s.places + 1] = { name = "Connect…", path = "connect:", pk = 15 }
     local pinned = {}
     for _, path in ipairs(s.pins) do
         if not seen[path] then
@@ -1247,6 +1354,19 @@ function F.show_places()
         rows[i] = { at = i - 1, name = p.name, path = p.path or "", pk = p.pk or 0, here = p.path ~= nil and p.path == s.path, pinned = p.pinned == true, kind = p.kind or 0, eject = p.eject == true, use = p.use or -1 }
     end
     model.places = rows
+    -- where the place we are in sits in the column (its highlight's middle and height, as the scene lays the rows out: a heading 30, a drive 44, a place 38, 2 between), for the
+    -- thumb that travels to it
+    local top, found = 0, false
+    for _, r in ipairs(rows) do
+        local h = r.kind == 1 and 30 or (r.kind == 2 and 44 or 38)
+        if r.here and not found then
+            found = true
+            fact["hr.h"] = h - 2
+            fact["hr.y"] = top + (h - 2) / 2
+        end
+        top = top + h + 2
+    end
+    fact["hr.on"] = found
 end
 
 -- drives: the ones that are plugged in and not the computer's own (what is mounted under /run/media, /media or /mnt; a stick or a disk that is not mounted yet is there to be)
@@ -1361,14 +1481,15 @@ function F.eject_place(p)
     if not p.dev then return end
     say("Putting " .. p.name .. " away…")
     local function power_off()
-        if not p.parent then F.poll_devices() return end
+        -- (only a disk that can be taken out is switched off: a partition of the computer's own disk mounted under /mnt had its whole disk powered off)
+        if not p.parent or not p.removable then F.poll_devices() return end
         run("udisksctl", { "power-off", "-b", "/dev/" .. p.parent }, function() F.poll_devices() end)
     end
     if p.mounted then
         if s.path == p.path or s.path:sub(1, #p.path + 1) == p.path .. "/" then F.go(s.home) end
         run("udisksctl", { "unmount", "-b", p.dev }, function(out, code)
             if code ~= 0 then say("Could not put " .. p.name .. " away: " .. why(out)) return end
-            say(p.name .. " can be taken out now")
+            say(p.removable and (p.name .. " can be taken out now") or (p.name .. " is put away"))
             power_off()
         end, { errors = true })
     else
@@ -1746,9 +1867,10 @@ on("crumb", function(i)
     if c then F.go(c.path) end
 end)
 on("slid", function(scroll)
-    s.scroll = tonumber(scroll) or 0
+    -- (where the list is on its way, not where it is going: `s.scroll` stays what was asked for, or a key pressed while it travels, and the place remembered for Back, would be a row short)
+    local at = tonumber(scroll) or 0
     local back = s.view == "grid" and 2 or 1
-    local first = math.max(math.floor(s.scroll / row_h()) - back, 0)
+    local first = math.max(math.floor(at / row_h()) - back, 0)
     if math.abs(first - s.first) >= back or first ~= s.first and first == 0 then
         s.first = first
         F.show_rows()
@@ -1849,13 +1971,53 @@ end)
 function F.close_menu()
     s.menu = nil
     fact["menu.on"] = false
+    fact["menu.cur"] = -1
+end
+-- Up and Down walk the lines that can be pressed, Home and End go to the first and the last, and a letter to the next line that begins with it.
+function F.menu_step(d, from)
+    local rows = s.menu_rows or {}
+    local n = #rows
+    if n == 0 then return end
+    local i = from or s.menu_cur or (d > 0 and 0 or n + 1)
+    for _ = 1, n do
+        i = i + d
+        if i < 1 then i = n elseif i > n then i = 1 end
+        if rows[i].on then
+            s.menu_cur = i
+            fact["menu.ky"] = rows[i].cy
+            fact["menu.kd"] = rows[i].danger
+            fact["menu.cur"] = i - 1
+            return
+        end
+    end
+end
+function F.menu_letter(ch)
+    local rows = s.menu_rows or {}
+    local n = #rows
+    local at = s.menu_cur or 0
+    for k = 1, n do
+        local i = (at + k - 1) % n + 1
+        if rows[i].on and rows[i].label:sub(1, 1):lower() == ch then
+            s.menu_cur = i
+            fact["menu.ky"] = rows[i].cy
+            fact["menu.kd"] = rows[i].danger
+            fact["menu.cur"] = i - 1
+            return
+        end
+    end
 end
 on("menu_close", F.close_menu)
 
 local function set_menu(kind, rows)
     local h = 14
-    for _, r in ipairs(rows) do h = h + MENU_ROW + (r.sep and 9 or 0) end
+    for _, r in ipairs(rows) do
+        r.cy = h - 14 + (r.sep and 10 or 1) + (MENU_ROW - 2) / 2       -- the middle of its line in the column, for the thumb
+        h = h + MENU_ROW + (r.sep and 9 or 0)
+    end
+    fact["menu.hov"] = false
     s.menu = kind
+    s.menu_rows, s.menu_cur = rows, nil
+    fact["menu.cur"] = -1
     model.menuitems = rows
     fact["menu.h"] = h
     fact["menu.on"] = true
@@ -2084,7 +2246,7 @@ end
 -- the programs that can open a kind of file: the default first, then the others that say they can
 local APP_DIRS = { "/.local/share/applications", "/usr/share/applications", "/usr/local/share/applications", "/var/lib/flatpak/exports/share/applications", "/.local/share/flatpak/exports/share/applications" }
 function F.apps_for(mime, cb)
-    run("gio", { "mime", mime }, function(out)
+    run("gio", { "mime", mime }, function(out)   -- (in English, below: "Default application for" is translated)
         local ids, seen = {}, {}
         local def = (out or ""):match("Default application for[^:]*: ([^\n]+)")
         if def and def ~= "No default applications" then def = trim(def); ids[1] = def; seen[def] = true else def = nil end
@@ -2109,7 +2271,7 @@ function F.apps_for(mime, cb)
             for _, id in ipairs(ids) do if found[id] then apps[#apps + 1] = found[id] end end
             cb(apps, def)
         end)
-    end)
+    end, { env = { LC_ALL = "C" } })
 end
 function F.mime_of(path, cb)
     run("file", { "-b", "--mime-type", "--", path }, function(m) cb(trim(m)) end)
@@ -2208,7 +2370,7 @@ function show_props()
                 if s.props ~= gen then return end
                 local n = tonumber((d or ""):match("(%d+)%s+total%s*$"))
                 if n then rows[2].value = size_text(n) .. " (" .. commas(n) .. " bytes)"; model.prows = rows end
-            end)
+            end, { env = { LC_ALL = "C" } })   -- (in English: the "total" line is translated)
         end
         return
     end
@@ -2451,6 +2613,31 @@ function F.show_preview(idx)
         run("ffmpeg", { "-v", "error", "-y", "-i", e.path, "-an", "-frames:v", "1", cover }, function(_, code)
             if mine == pv_seq and code == 0 then picture(cover, cover) end
         end)
+    elseif e.ik == 6 and ext_of(e.name) ~= "iso" then
+        -- an archive: what is in it, the first lines of its list (a big one is not read to its end)
+        local names, n, over, id = {}, 0, false, nil
+        local function show(failed)
+            if mine ~= pv_seq then return end
+            if n == 0 then
+                text["pv.text"] = failed and "It cannot be looked into" or "An empty archive"
+            else
+                local more = n - #names
+                local tail = ""
+                if over then tail = "\n… and more than " .. commas(more) .. " others"
+                elseif more > 0 then tail = "\n… and " .. commas(more) .. (more == 1 and " other" or " others") end
+                text["pv.text"] = table.concat(names, "\n") .. tail
+                text["pv.sub"] = kind_text(e) .. " · " .. size_text(e.size) .. " · " .. (over and "more than " or "") .. commas(n) .. (n == 1 and " thing in it" or " things in it")
+            end
+            fact["pv.kind"] = 2
+        end
+        id = spawn("bsdtar", { "-tf", e.path }, function(line)
+            if over or mine ~= pv_seq then return end
+            n = n + 1
+            if #names < 24 then names[#names + 1] = (#line > 84 and ("…" .. line:sub(-83)) or line) end
+            if n >= 5000 then over = true; show(); if id then kill(id) end end
+        end, function(_, code)
+            if not over then show(code ~= 0) end
+        end)
     else
         -- text of any kind: what is in the first lines
         F.mime_of(e.path, function(mime)
@@ -2526,46 +2713,155 @@ local function free_in(name, taken)
 end
 F.free_in = free_in
 
--- the card: what is being done and how far it has got
+-- how long is left, said roughly: a number that jumps between 41 and 39 s every half second is noise
+local function left_text(secs)
+    if secs < 10 then return "a few seconds left" end
+    if secs < 60 then return string.format("%d s left", math.ceil(secs / 5) * 5) end
+    if secs < 3600 then return string.format("about %d min left", math.ceil(secs / 60)) end
+    local h = math.floor(secs / 3600)
+    return string.format("about %d h %d min left", h, math.ceil((secs - h * 3600) / 60))
+end
+
+-- A copy or a move counts in bytes, not in items: one 8 GB film among twenty photos was "1 of 21" for minutes and then everything at once.
+-- What every source weighs is asked once when the job starts (`du`, while the first item is already going); until it answers, items are counted
+-- as before. Each item, when it ends, is either done (its bytes count) or dropped (skipped, failed, onto itself: its bytes leave the total).
+local function job_bytes(job)
+    if not job.sizes then return end
+    local total, done = 0, 0
+    for _, t in ipairs(job.spec.tasks) do
+        local n = job.sizes[t.src]
+        if n then
+            local st = job.st[t]
+            if st ~= "dropped" then total = total + n end
+            if st == "done" then done = done + n
+            elseif t == job.cur_task then done = done + math.min(job.cur_bytes or 0, n) end
+        end
+    end
+    -- (what `cp` has handed over is not on the disk yet: Linux keeps it in memory and writes it out later, so a 1.3 GB copy to a USB stick
+    -- was "done" in a second and then wrote for a minute with nothing on screen. What waits to be written now, more than when the job started,
+    -- is taken off.)
+    return total, math.max(done - (job.pending or 0), 0)
+end
+
+-- the card: what is being done and how far it has got, and, for a copy that takes a while, how much, how fast and how long is left
 function F.job_text()
     local job = s.job
     if not job then return end
     local n = #job.spec.tasks
     local i = math.min(job.i - 1, n)
     text["job.text"] = job.spec.title .. (n > 1 and string.format(" · %d of %d", math.max(i, 1), n) or "") .. (job.cur_name and (" · " .. job.cur_name) or "")
-    if job.indeterminate then fact["job.p"] = -1
-    else fact["job.p"] = math.min(((math.max(i, 1) - 1) + (job.sub or 0)) / math.max(n, 1), 1) end
+    local total, done = job_bytes(job)
+    if job.indeterminate then
+        fact["job.p"] = -1
+        text["job.detail"] = ""
+        return
+    end
+    if not total or total < 1 then
+        fact["job.p"] = math.min(((math.max(i, 1) - 1) + (job.sub or 0)) / math.max(n, 1), 1)
+        text["job.detail"] = job.sizing and "Working out the size…" or ""
+        return
+    end
+    fact["job.p"] = math.min(done / total, 1)
+    -- the speed: what moved in the last few seconds (a rename on the same disk moves gigabytes in an instant, and over the whole job it made a
+    -- copy that followed look far faster than it was)
+    local now = os.clock()
+    local smp = job.samples
+    if #smp == 0 or now - smp[#smp].t >= 0.4 then
+        smp[#smp + 1] = { t = now, b = done }
+        while #smp > 2 and now - smp[1].t > 6 do table.remove(smp, 1) end
+    end
+    local detail = size_text(done) .. " of " .. size_text(total)
+    local first, last = smp[1], smp[#smp]
+    local span = last.t - first.t
+    if span >= 1.5 and now - job.started >= 2 then
+        local rate = (last.b - first.b) / span
+        if rate > 0 then
+            detail = detail .. " · " .. size_text(rate) .. "/s · " .. left_text((total - done) / rate)
+        elseif now - (job.moved_at or job.started) > 5 then
+            detail = detail .. " · waiting"
+        end
+    end
+    if done ~= job.last_done then job.last_done = done; job.moved_at = now end
+    text["job.detail"] = detail
+end
+
+-- what each source weighs, all in one `du` (-0: a name may hold a newline)
+local function size_job(job)
+    local srcs, args = {}, { "-sbx0", "--" }
+    for _, t in ipairs(job.spec.tasks) do
+        if (t.kind == "copy" or t.kind == "move") and t.src and not srcs[t.src] then srcs[t.src] = true; args[#args + 1] = t.src end
+    end
+    if #args == 2 then return end
+    job.sizing = true
+    run("du", args, function(out)
+        job.sizing = false
+        local sizes = {}
+        for rec in (out or ""):gmatch("[^%z]+") do
+            local n, p = rec:match("^(%d+)\t(.*)$")
+            if n then sizes[p] = tonumber(n) end
+        end
+        job.sizes = sizes
+        if s.job == job then F.job_text() end
+    end)
 end
 
 -- run a program as the job's: it can be stopped, and what it said about its trouble is kept
 function F.exec(job, cmd, args, cb)
     local lines = {}
+    -- (in English: what `gio trash` and the rest say is read here, "not supported" for a disk with no Trash, and in another language it was
+    -- shown raw instead of offering to delete for good)
     local ok, id = pcall(spawn, cmd, args, function(l) lines[#lines + 1] = l end, function(_, code)
         job.proc = nil
         cb(code == 0, table.concat(lines, "\n"))
-    end, { errors = true })
+    end, { errors = true, env = { LC_ALL = "C" } })
     if ok then job.proc = id else cb(false, "could not start " .. cmd) end
 end
 
--- a long copy says how far it is: the size of the copy so far against the size of the original, looked at twice a second after the first second
-local function watch_progress(job, src, dst)
+-- a long copy says how far it is: the size of the copy so far against the size of the original, looked at twice a second after the first half
+-- second. Joined into a folder that is already there (`base`), what that folder held before is not counted as copied.
+local function watch_progress(job, t, dst, base)
     job.cur_dst = dst
-    after(1000, function()
+    job.cur_task = t
+    job.cur_bytes = 0
+    local src = t.src
+    local function size_of(path, cb)
+        run("du", { "-sbx", "--", path }, function(o) cb(tonumber((o or ""):match("^(%d+)"))) end)
+    end
+    after(500, function()
         if job.cur_dst ~= dst or s.job ~= job then return end
-        run("du", { "-sbx", "--", src }, function(o)
-            local total = tonumber((o or ""):match("^(%d+)"))
+        local function start(total, from)
             if not total or total < 1 or job.cur_dst ~= dst then return end
             local function poll()
                 if job.cur_dst ~= dst or s.job ~= job then return end
-                run("du", { "-sb", "--", dst }, function(o2)
+                size_of(dst, function(got)
                     if job.cur_dst ~= dst or s.job ~= job then return end
-                    local got = tonumber((o2 or ""):match("^(%d+)")) or 0
-                    job.sub = math.min(got / total, 0.99)
+                    local cur = math.max((got or 0) - from, 0)
+                    job.cur_bytes = math.min(cur, total)
+                    job.sub = math.min(cur / total, 0.99)
                     F.job_text()
                     after(500, poll)
                 end)
             end
             poll()
+        end
+        local function with_total(from)
+            local known = job.sizes and job.sizes[src]
+            if known then start(known, from) else size_of(src, function(n) start(n, from) end) end
+        end
+        if base then size_of(dst, function(n) with_total(n or 0) end) else with_total(0) end
+    end)
+end
+
+-- A move that never takes another's place: `mv -n` exits 0 when it skips, so a name taken meanwhile (another program, a second window) was
+-- reported as done; and given a folder's name it moved the thing INTO that folder. `-T` keeps it from going into one, and the source still
+-- being there afterwards is what says it did not happen.
+function F.mv_nc(job, src, dst, cb)
+    F.exec(job, "mv", { "-nT", "--", src, dst }, function(ok, err)
+        if not ok then return cb(false, err) end
+        -- (only the letters' case changed: on a disk that does not tell them apart, a USB stick's, the old name still answers)
+        if src:lower() == dst:lower() then return cb(true, "") end
+        run("stat", { "-c", "%i", "--", src }, function(_, code)
+            if code == 0 then cb(false, "\"" .. basename(dst) .. "\" is taken") else cb(true, "") end
         end)
     end)
 end
@@ -2580,16 +2876,30 @@ local function transfer_task(job, t, done)
         -- mode: nil (a new name), "replace" (over what is there), "merge" (a folder into a folder)
         job.cur_name = basename(dst)
         F.job_text()
-        watch_progress(job, t.src, dst)
+        watch_progress(job, t, dst, mode == "merge")
         local function finished(ok, err)
             job.cur_dst = nil
+            job.cur_task = nil
+            job.cur_bytes = 0
             job.sub = 0
+            job.st[t] = (ok and not job.cancel) and "done" or "dropped"
             if job.cancel then
-                if not mode then F.exec(job, "rm", { "-rf", "--", dst }, function() done() end) else done() end
+                -- A half-made COPY is taken away. A move never is: stopped just as `mv` had renamed it, or while it was taking the original away
+                -- after copying to another disk, what is at `dst` is the only whole one there is, and removing it lost the file.
+                if t.kind == "copy" and not mode then F.exec(job, "rm", { "-rf", "--", dst }, function() done() end)
+                else
+                    if t.kind ~= "copy" and ok and not mode then job.results[#job.results + 1] = { kind = t.kind, src = t.src, dst = dst }
+                    elseif t.kind ~= "copy" and not ok then
+                        job.errors[#job.errors + 1] = string.format("Stopped while moving \"%s\": look in both folders, part of it may be in each", basename(t.src))
+                    end
+                    done()
+                end
                 return
             end
             if ok then
-                job.results[#job.results + 1] = { kind = t.kind, src = t.src, dst = dst }
+                -- (only what went to a new name can be taken back: after Replace or a merge, `dst` also holds what was there before, and undoing
+                -- carried all of it away, or sent it all to the Trash)
+                if not mode then job.results[#job.results + 1] = { kind = t.kind, src = t.src, dst = dst } end
                 local set = job.names[into]
                 if set then set[basename(dst)] = true end
             else
@@ -2609,7 +2919,7 @@ local function transfer_task(job, t, done)
                     else finished(ok, err) end
                 end)
             elseif mode == "replace" then F.exec(job, "mv", { "-f", "--", t.src, dst }, finished)
-            else F.exec(job, "mv", { "-n", "--", t.src, dst }, finished) end
+            else F.mv_nc(job, t.src, dst, finished) end
         end
     end
     names_in(job, into, function(set)
@@ -2619,14 +2929,14 @@ local function transfer_task(job, t, done)
         if not exists then go_on(dst) return end
         if dst == t.src then
             -- onto itself: a copy gets a name of its own; a move is nothing
-            if t.kind == "move" then done() return end
+            if t.kind == "move" then job.st[t] = "dropped"; done() return end
             go_on(join(into, free_in(basename(dst), set)))
             return
         end
         if t.auto_both then go_on(join(into, free_in(basename(dst), set))) return end
         local function decide(choice)
-            if choice == "stop" then job.cancel = true; done()
-            elseif choice == "skip" then job.skipped = job.skipped + 1; done()
+            if choice == "stop" then job.cancel = true; job.st[t] = "dropped"; done()
+            elseif choice == "skip" then job.skipped = job.skipped + 1; job.st[t] = "dropped"; done()
             elseif choice == "both" then go_on(join(into, free_in(basename(dst), set)))
             else
                 -- replace: a folder over a folder is joined with it; a file over a file is written over; anything else puts the old one in the Trash first
@@ -2657,7 +2967,7 @@ TASK.move = transfer_task
 
 function TASK.rename(job, t, done)
     job.cur_name = basename(t.dst)
-    F.exec(job, "mv", { "-n", "--", t.src, t.dst }, function(ok, err)
+    F.mv_nc(job, t.src, t.dst, function(ok, err)
         if ok then job.results[#job.results + 1] = { kind = "rename", src = t.src, dst = t.dst }
         else job.failed = job.failed + 1; job.errors[#job.errors + 1] = string.format("Could not rename \"%s\": %s", basename(t.src), why(err)) end
         done()
@@ -2707,6 +3017,9 @@ function TASK.exec(job, t, done)
             job.failed = job.failed + 1
             job.errors[#job.errors + 1] = string.format("%s: %s", t.fail or "That did not work", why(err))
             if t.created then F.exec(job, "rm", { "-rf", "--", t.created }, function() done() end) return end
+            -- (the folder made for it, if nothing went in: a plain .gz is no archive to bsdtar, and the empty folder was left behind. `rmdir`
+            -- takes only an empty one, so whatever did come out stays.)
+            if t.made_dir then F.exec(job, "rmdir", { "--", t.made_dir }, function() done() end) return end
         end
         done()
     end)
@@ -2749,7 +3062,11 @@ function TASK.delete(job, t, done)
     job.cur_name = #t.srcs == 1 and basename(t.srcs[1]) or (#t.srcs .. " items")
     job.indeterminate = true
     local args = { "-rf", "--" }
-    for _, p in ipairs(t.srcs) do args[#args + 1] = p end
+    for _, p in ipairs(t.srcs) do
+        args[#args + 1] = p
+        -- (deleted for good from the Trash, its note of where it came from goes too: left, it was an orphan that Undo later matched)
+        if dirname(p) == s.data .. "/Trash/files" then args[#args + 1] = s.data .. "/Trash/info/" .. basename(p) .. ".trashinfo" end
+    end
     F.exec(job, "rm", args, function(ok, err)
         job.indeterminate = false
         if not ok then job.failed = job.failed + 1; job.errors[#job.errors + 1] = "Could not delete: " .. why(err) end
@@ -2764,11 +3081,11 @@ function TASK.restore(job, t, done)
     F.exec(job, "mkdir", { "-p", "--", dir }, function()
         names_in(job, dir, function(set)
             local dst = join(dir, free_in(basename(orig), set))
-            F.exec(job, "mv", { "-n", "--", t.src, dst }, function(ok, err)
+            F.mv_nc(job, t.src, dst, function(ok, err)
                 if ok then
                     set[basename(dst)] = true
                     job.results[#job.results + 1] = { kind = "restore", src = t.src, dst = dst }
-                    F.exec(job, "rm", { "-f", "--", s.data .. "/Trash/info/" .. basename(t.src) .. ".trashinfo" }, function() done() end)
+                    F.exec(job, "rm", { "-f", "--", t.info or (s.data .. "/Trash/info/" .. basename(t.src) .. ".trashinfo") }, function() done() end)
                 else
                     job.failed = job.failed + 1
                     job.errors[#job.errors + 1] = string.format("Could not put \"%s\" back: %s", basename(orig), why(err))
@@ -2779,10 +3096,60 @@ function TASK.restore(job, t, done)
     end)
 end
 
+-- what waits in memory to be written to a disk (Dirty + Writeback in /proc/meminfo, for the whole system), in bytes
+local function unwritten(cb)
+    run("cat", { "/proc/meminfo" }, function(o)
+        local d = tonumber((o or ""):match("\nDirty:%s*(%d+)")) or 0
+        local w = tonumber((o or ""):match("\nWriteback:%s*(%d+)")) or 0
+        cb((d + w) * 1024)
+    end)
+end
+local function watch_unwritten(job)
+    unwritten(function(base)
+        job.dirty0 = base
+        local function poll()
+            if s.job ~= job then return end
+            unwritten(function(now)
+                if s.job ~= job then return end
+                job.pending = math.max(now - job.dirty0, 0)
+                F.job_text()
+                after(500, poll)
+            end)
+        end
+        after(500, poll)
+    end)
+end
+-- the last step of a copy or a move: wait until what it wrote is on the disk (`sync -f`, each folder it went into), so the card stays until
+-- the stick can be pulled out, and the bar ends when the writing does
+local function flush(job, cb)
+    local dirs, seen = {}, {}
+    for _, t in ipairs(job.spec.tasks) do
+        if job.st[t] == "done" then
+            local into = t.into or (t.dst and dirname(t.dst))
+            if into and not seen[into] then seen[into] = true; dirs[#dirs + 1] = into end
+        end
+    end
+    if #dirs == 0 or not job.sizes or job.cancel then cb() return end
+    unwritten(function(now)
+        if now - (job.dirty0 or now) < 8000000 then cb() return end      -- nothing much waiting (a copy on the same disk, a rename)
+        job.cur_name = "writing to " .. basename(dirs[1])
+        F.job_text()
+        local args = { "-f", "--" }
+        for _, d in ipairs(dirs) do args[#args + 1] = d end
+        -- (Cancel cannot stop a `sync`: it waits inside the kernel until the disk is written, and a signal only lands after. So Cancel does
+        -- not wait for it: `job.flushing` is what it calls instead, and whichever comes first ends the job.)
+        job.flushing = cb
+        F.exec(job, "sync", args, function()
+            local go = job.flushing
+            if go then job.flushing = nil; go() end
+        end)
+    end)
+end
+
 local function next_task(job)
     if job.cancel then F.finish_job(job) return end
     local t = job.spec.tasks[job.i]
-    if not t then F.finish_job(job) return end
+    if not t then flush(job, function() F.finish_job(job) end) return end
     job.i = job.i + 1
     job.sub = 0
     local fn = TASK[t.kind]
@@ -2796,9 +3163,10 @@ function F.run_job(spec)
         s.jobq[#s.jobq + 1] = spec
         return
     end
-    local job = { spec = spec, i = 1, results = {}, names = {}, skipped = 0, failed = 0, errors = {} }
+    local job = { spec = spec, i = 1, results = {}, names = {}, skipped = 0, failed = 0, errors = {}, st = {}, samples = {}, started = os.clock() }
     s.job = job
     s.busy = true
+    if not spec.quiet then size_job(job); watch_unwritten(job) end
     if not spec.quiet then
         after(700, function()
             if s.job == job and not (s.cf) then fact["job.on"] = true; F.job_text() end
@@ -2838,6 +3206,27 @@ on("job_cancel", function()
     local job = s.job
     if not job then return end
     job.cancel = true
+    if job.flushing then
+        -- stopped while it was being written out: the copies are taken away (they are not all on the disk yet); what was moved stays, as its
+        -- original is gone. Removing them also drops what of them was still waiting to be written.
+        local go, gone, keep = job.flushing, { "-rf", "--" }, {}
+        for _, r in ipairs(job.results) do
+            if r.kind == "copy" then gone[#gone + 1] = r.dst else keep[#keep + 1] = r end
+        end
+        job.results = keep
+        job.flushing = nil
+        job.proc = nil
+        go()
+        -- (in the background, and not waited for: on a USB stick `rm` waits for the part of the file already being written out, which can be
+        -- the rest of the write, and the card stayed up all that time after Cancel)
+        if #gone > 2 then
+            run("rm", gone, function(_, code)
+                if code ~= 0 then say("Some of the copies could not be taken away", 6) end
+                F.refresh()
+            end)
+        end
+        return
+    end
     -- (asked to stop, not forgotten: it says it has ended, and the job goes on from there, taking away what was half made)
     if job.proc then kill(job.proc, "term") end
 end)
@@ -2858,34 +3247,76 @@ function F.undo()
     say("Undoing: " .. entry.text)
     entry.fn()
 end
--- the Trash gives back what was put there from these places (what the Trash says it came from is matched by its file)
+-- the Trash gives back what was put there from these places: for each, the one that was put there last (what the Trash says it came from is read from its info files)
 function F.restore_paths(origs, then_fn)
-    local args = { "-r", "-l", "-x", "-F" }
-    for _, p in ipairs(origs) do
-        args[#args + 1] = "-e"
-        args[#args + 1] = "Path=" .. uri_of(p):gsub("^file://", "")
-    end
-    args[#args + 1] = s.data .. "/Trash/info"
-    run("grep", args, function(out)
-        local tasks = {}
-        for f in (out or ""):gmatch("[^\n]+") do
-            local name = basename(f):gsub("%.trashinfo$", "")
-            tasks[#tasks + 1] = { kind = "restore", src = s.data .. "/Trash/files/" .. name }
+    -- (Before, everything that had ever been trashed from one of these paths came back, an old "notes.txt" with the one just trashed; and what went to the Trash of another disk,
+    -- `.Trash-UID` at the top of it, was never found. Now each path gets its newest, and the Trash of the disk each path is on is looked in as well.)
+    local function look(uid, tops)
+        local trashes = { { root = s.data .. "/Trash" } }
+        if uid then
+            for _, top in ipairs(tops) do
+                trashes[#trashes + 1] = { root = join(top, ".Trash-" .. uid), top = top }
+                trashes[#trashes + 1] = { root = join(top, ".Trash/" .. uid), top = top }
+            end
         end
-        -- where each came from: the info files again
-        run("grep", { "-r", "-H", "-E", "^Path=", s.data .. "/Trash/info" }, function(o)
-            local from = {}
+        local args, by_info = { "-r", "-H", "-E", "^(Path|DeletionDate)=" }, {}
+        for _, tr in ipairs(trashes) do
+            args[#args + 1] = tr.root .. "/info"
+            by_info[tr.root .. "/info"] = tr
+        end
+        run("grep", args, function(o)
+            local recs = {}
             for line in (o or ""):gmatch("[^\n]+") do
-                local file, val = line:match("^(.-)%.trashinfo:Path=(.*)$")
-                if file then from[basename(file)] = unescape(val) end
+                local file, key, val = line:match("^(.-)%.trashinfo:(%a+)=(.*)$")
+                local tr = file and by_info[dirname(file)]
+                if tr then
+                    recs[file] = recs[file] or { file = file, tr = tr }
+                    recs[file][key] = val
+                end
             end
-            local keep = {}
-            for _, t in ipairs(tasks) do
-                t.orig = from[basename(t.src)]
-                if t.orig then keep[#keep + 1] = t end
+            -- for each path, the newest thing that came from it (a disk's own Trash writes the path from the top of that disk)
+            local best, tied = {}, {}
+            for _, r in pairs(recs) do
+                if r.Path then
+                    local from = unescape(r.Path)
+                    if r.tr.top and from:sub(1, 1) ~= "/" then from = join(r.tr.top, from) end
+                    local when = r.DeletionDate or ""
+                    local b = best[from]
+                    if not b or when > b.when then best[from] = { r = r, when = when }; tied[from] = nil
+                    elseif when == b.when then tied[from] = true end
+                end
             end
-            if #keep == 0 then say("It is not in the Trash any more") return end
-            F.run_job({ title = "Putting back", tasks = keep, quiet = true, after = then_fn })
+            local tasks, unsure = {}, 0
+            for _, p in ipairs(origs) do
+                local b = best[p]
+                if b and tied[p] then unsure = unsure + 1
+                elseif b then
+                    tasks[#tasks + 1] = { kind = "restore", src = b.r.tr.root .. "/files/" .. basename(b.r.file), orig = p, info = b.r.file .. ".trashinfo" }
+                end
+            end
+            -- (two things trashed from one path in the same second cannot be told apart: neither is touched)
+            if unsure > 0 then say("Two things with that name went to the Trash at the same moment: put the right one back from the Trash", 8) end
+            if #tasks == 0 then
+                if unsure == 0 then say("It is not in the Trash any more") end
+                return
+            end
+            F.run_job({ title = "Putting back", tasks = tasks, quiet = true, after = then_fn })
+        end)
+    end
+    -- which disk each path is on (the folder it was in is asked: the thing itself is gone), and whose Trash to look for there
+    run("stat", { "-c", "%u", "--", s.home }, function(u, ucode)
+        local uid = ucode == 0 and trim(u):match("^%d+$") or nil
+        local args, seen = { "-c", "%m", "--" }, {}
+        for _, p in ipairs(origs) do
+            local d = dirname(p)
+            if not seen[d] then seen[d] = true; args[#args + 1] = d end
+        end
+        run("stat", args, function(out)
+            local tops, have = {}, {}
+            for m in (out or ""):gmatch("[^\n]+") do
+                if m:sub(1, 1) == "/" and not have[m] then have[m] = true; tops[#tops + 1] = m end
+            end
+            look(uid, tops)
         end)
     end)
 end
@@ -2976,9 +3407,10 @@ function F.set_clip(cut)
     local set, uris = {}, { cut and "cut" or "copy" }
     for _, e in ipairs(list) do set[e.path] = true; uris[#uris + 1] = uri_of(e.path) end
     s.clip = { cut = cut, set = set }
-    run("wl-copy", { "-t", "x-special/gnome-copied-files", "--", table.concat(uris, "\n") }, function(_, code)
+    -- (`output = false`: wl-copy stays behind holding the clipboard, and waiting for its output ended only at the next copy)
+    run("wl-copy", { "-t", "x-special/gnome-copied-files" }, function(_, code)
         if code ~= 0 then say("The clipboard could not be written") end
-    end)
+    end, { input = table.concat(uris, "\n"), output = false })
     fact["clip.on"] = true
     say(string.format("%d %s", #list, cut and "cut" or "copied"), 3)
     F.show_rows()
@@ -2986,7 +3418,7 @@ end
 function F.clear_clip()
     s.clip = nil
     fact["clip.on"] = false
-    run("wl-copy", { "--clear" }, function() end)
+    run("wl-copy", { "--clear" }, function() end, { output = false })
 end
 local function paths_of(data)
     local out = {}
@@ -3167,7 +3599,8 @@ function F.compress()
             local name = free_in(base .. r.ext, set)
             local dst = join(dir, name)
             local args = { "-a", "-cf", dst, "-C", dir }
-            for _, e in ipairs(list) do args[#args + 1] = e.name end
+            -- (a name that starts with `-` is an option to bsdtar, and one with `@` an archive to copy in: as `./name` it is the file)
+            for _, e in ipairs(list) do args[#args + 1] = e.name:match("^[%-@]") and ("./" .. e.name) or e.name end
             F.run_job({ title = "Making an archive", tasks = { { kind = "exec", cmd = "bsdtar", args = args, created = dst, label = name, fail = "Could not make the archive" } }, pick_name = name,
                 undo = function(job) return { text = "Made " .. name, fn = function() F.run_job({ title = "Removing", quiet = true, tasks = { { kind = "trash", srcs = { dst } } } }) end } end })
         end)
@@ -3183,7 +3616,7 @@ function F.extract()
         local name = free_in(stem_of(e.name), set)
         local dst = join(dir, name)
         F.run_job({ title = "Opening an archive",
-            tasks = { { kind = "mkdir", dst = dst }, { kind = "exec", cmd = "bsdtar", args = { "-xf", e.path, "-C", dst }, label = e.name, fail = "Could not open the archive" } },
+            tasks = { { kind = "mkdir", dst = dst }, { kind = "exec", cmd = "bsdtar", args = { "-xf", e.path, "-C", dst }, label = e.name, fail = "Could not open the archive", made_dir = dst } },
             pick_name = name,
             undo = function(job) return { text = "Opened " .. e.name, fn = function() F.run_job({ title = "Removing", quiet = true, tasks = { { kind = "trash", srcs = { dst } } } }) end } end })
     end)
@@ -3212,9 +3645,9 @@ function F.copy_path()
     local paths = {}
     for _, e in ipairs(list) do paths[#paths + 1] = e.path end
     if #paths == 0 then paths[1] = s.path end
-    run("wl-copy", { "--", table.concat(paths, "\n") }, function(_, code)
+    run("wl-copy", {}, function(_, code)
         say(code == 0 and (#paths == 1 and "Path copied" or (#paths .. " paths copied")) or "The clipboard could not be written", 3)
-    end)
+    end, { input = table.concat(paths, "\n"), output = false })
 end
 function F.star_toggle()
     local list = picked_list()
@@ -3444,7 +3877,14 @@ function F.run_search(again)
         if path then
             count = count + 1
             items[#items + 1] = make_item(path, basename(path), ty == "d", tonumber(sz) or 0, tonumber(mt) or 0, tonumber(mode, 8) or 0, ty == "l", false)
-            if count >= 500 and s.search_proc then kill(s.search_proc) end
+            -- (`kill(id)` forgets the program: its end is never told, so what the end does is done here. Left to it, the search never
+            -- finished, and the list was published again, the selection emptied, every 450 ms.)
+            if count >= 500 and s.search_proc then
+                kill(s.search_proc)
+                s.search_proc = nil
+                running = false
+                publish(true)
+            end
         end
     end, function()
         s.search_proc = nil
@@ -3766,6 +4206,8 @@ ACT[1] = function()
     F.ask_dialog("new", "New folder", "", "Create")
 end
 ACT[2] = function()
+    -- (renamed in the Trash, a thing lost the note of where it came from, which is kept under its name: Restore no longer knew where to put it)
+    if fact["in.trash"] == true then say("Things in the Trash cannot be renamed: put it back first") return end
     local list = picked_list()
     if #list == 1 then F.ask_dialog("rename", "Rename", list[1].name, "Rename")
     elseif #list > 1 then F.ask_dialog("batch", string.format("Rename %d items: a name, and they are numbered", #list), "Name", "Rename") end
@@ -3800,7 +4242,8 @@ ACT[12] = function()
     local p = table.remove(s.back)
     if p then
         s.fwd[#s.fwd + 1] = s.path
-        F.go(p, "nav", nil, function() table.remove(s.fwd); s.back[#s.back + 1] = p end)       -- (a folder that has gone: the history stays as it was)
+        local from = s.path
+        F.go(p, "nav", dirname(from) == p and basename(from) or nil, function() table.remove(s.fwd); s.back[#s.back + 1] = p end)       -- (a folder that has gone: the history stays as it was)
     end
 end
 ACT[13] = function()
@@ -3814,6 +4257,7 @@ ACT[14] = function()
     s.hidden = not s.hidden
     fact.hidden = s.hidden
     F.save()
+    F.forget_counts()
     if s.mode == "deep" then F.run_search(true) return end
     s.items = F.visible()
     s.picked = {}
@@ -3926,7 +4370,7 @@ ACT[90] = function() F.ch_cancel() end
 ACT[91] = function() F.ch_ok() end
 ACT[92] = function() F.ch_filter_step() end
 
-on("act", function(k)
+function F.do_act(k)
     k = math.floor(tonumber(k) or 0)
     local ctx = { menu = s.menu, place = s.menu_place }
     if k == 10 then F.escape() return end
@@ -3934,7 +4378,8 @@ on("act", function(k)
     if k > CUSTOM_K and k <= CUSTOM_K + 8 then run_custom(k - CUSTOM_K, ctx) return end
     local fn = ACT[k]
     if fn then fn(ctx) end
-end)
+end
+on("act", F.do_act)
 
 -- ── the keys ──
 -- Every key comes here, with what it writes; what is typed in a field is that field's, so while one has the keys (a name being given, the search, the path) only the few that mean something to it are
@@ -3976,7 +4421,17 @@ on("key", function(name, txt)
         elseif lb == "Return" then local e = s.items[s.pv]; F.close_preview(); if e then F.open_item(e) end end
         return
     end
-    if s.menu then return end
+    if s.menu then
+        if lb == "Down" then F.menu_step(1)
+        elseif lb == "Up" then F.menu_step(-1)
+        elseif lb == "Home" then F.menu_step(1, 0)
+        elseif lb == "End" then F.menu_step(-1, #(s.menu_rows or {}) + 1)
+        elseif lb == "Return" or lb == "KP_Enter" or lb == "space" then
+            local r = s.menu_cur and s.menu_rows[s.menu_cur]
+            if r and r.on then F.do_act(r.k) end
+        elseif type(txt) == "string" and #txt == 1 and txt:match("%a") and not m.ctrl and not m.alt then F.menu_letter(txt:lower()) end
+        return
+    end
     if s.loc then
         if lb == "Tab" then F.loc_complete() end
         return
@@ -4052,6 +4507,7 @@ on("key", function(name, txt)
         if e and not s.picked[e.path] then s.picked = { [e.path] = true }; F.show_rows() end
         fact["menu.x"] = 300; fact["menu.y"] = 200
         F.open_menu(next(s.picked) and "item" or "bg")
+        F.menu_step(1, 0)
         return
     end
     -- a letter, or a figure, with nothing else open: a search that begins with it
@@ -4107,12 +4563,12 @@ local function ask_look()
         if v and v >= 0 then fact.look = v end
     end)
 end
-local GLASS_FACTS = { gop = "glass_op", gbend = "files_bend", grefr = "glass_refr", gdisp = "glass_disp", gclear = "glass_clear", gdome = "glass_dome", gmilk = "glass_milk", gsmoke = "glass_smoke", grim = "glass_rim" }
+local GLASS_FACTS = { gop = "glass_op", gbend = "files_bend", glive = "glass_live", gcap = "lens_interval_ms", grefr = "glass_refr", gdisp = "glass_disp", gclear = "glass_clear", gdome = "glass_dome", gmilk = "glass_milk", gsmoke = "glass_smoke", grim = "glass_rim" }
 local function ask_glass()
     for mine, theirs in pairs(GLASS_FACTS) do
         run("pleamar", { "--say", "vitreus", "get " .. theirs }, function(out, code)
             if code ~= 0 or not out then return end
-            if mine == "gbend" then fact.gbend = out:match("true") ~= nil
+            if mine == "gbend" or mine == "glive" then fact[mine] = out:match("true") ~= nil
             else
                 local n = tonumber(out:match("%-?[%d.]+"))
                 if n then fact[mine] = n end
@@ -4120,10 +4576,20 @@ local function ask_glass()
         end)
     end
 end
+-- Settings > Style's fill and its strength (Vitreus also says so itself when they change: logic/pencil_style.luau)
+local function ask_style()
+    for _, k in ipairs({ "pn_fill_i", "pn_shade_i" }) do
+        run("pleamar", { "--say", "vitreus", "get " .. k }, function(out, code)
+            local n = code == 0 and out and tonumber(out:match("%-?%d+"))
+            if n then fact[k] = n end
+        end)
+    end
+end
 ask_obs()
 ask_look()
 ask_glass()
 ask_round()
-after(4000, function() ask_obs(); ask_look(); ask_glass(); ask_round() end)
+ask_style()
+after(4000, function() ask_obs(); ask_look(); ask_glass(); ask_round(); ask_style() end)
 
 F.start()

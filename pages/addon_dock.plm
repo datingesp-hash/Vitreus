@@ -12,10 +12,13 @@ part AddonDock {
         let axb.top = mix(dax.ey, yo + vb - dax.ey, bt) - dax.eh / 2
         let axb.y = axb.top + 24 * cu                     
         let axb.xs = cdk.t * lm * (1 - adk.sb)                  // the upright pill at the top of a side strip stands in the panel's top corner on the strip's far side: the X (strip on the left) or the title (strip on the right) and the grip's end stand clear of it
-        let axb.xl = axb.xs * rt                                // (down a strip on the right everything is mirrored: the pill is at the panel's left)
-        let axb.xr = axb.xs * (1 - rt)
+        //  Along the panel's top (`axs.pt`: the strip along the bottom puts the pill there) the pill lies in its left or right corner: the title or the X and the grip's end stand clear of it too.
+        let axb.pw = (adk_pins.count * cdk.p + 8 * dbu) * axs.pt
+        let axb.pr = mix(adk.sr, 1 - adk.sr, rt)
+        let axb.xl = axb.xs * rt + axb.pw * (1 - axb.pr)        // (down a strip on the right everything is mirrored: the pill is at the panel's left)
+        let axb.xr = axb.xs * (1 - rt) + axb.pw * axb.pr
                       // as the Desk's tab row: a tall bar, the grip near its top and the title and X level with the middle
-        group { scale: rs; pivot: floor(axb.cx - dax.ew / 2 + 26 * cu + axb.xl + 0.5), floor(axb.y + 0.5); text ax_title { at: floor(axb.cx - dax.ew / 2 + 26 * cu + axb.xl + 0.5), floor(axb.y + 0.5); anchor: left center; size: 20; weight: 700; width: (dax.ew - 90 - axb.xs) / rs; lines: 1; color: ink; family: "Space Grotesk" } }
+        group { scale: rs; pivot: floor(axb.cx - dax.ew / 2 + 26 * cu + axb.xl + 0.5), floor(axb.y + 0.5); text ax_title { at: floor(axb.cx - dax.ew / 2 + 26 * cu + axb.xl + 0.5), floor(axb.y + 0.5); anchor: left center; size: 20; weight: 700; width: (dax.ew - 90 - axb.xl - axb.xr) / rs; lines: 1; color: ink; family: "Space Grotesk" } }
         box { at: axb.cx, axb.top + 11 * cu; size: 34 * cu, 4 * cu; corner: 2 * cu; color: ink; opacity: 20% + 35% * max(ax_grip.hover, if(ax_hold, 1, 0)) }
         //  While it is held (or resized) the zone is the whole screen: the surface takes input only where a zone is, so a pull upward, off the panel, would be lost.
         zone box ax_grip { at: if(ax_hold, screen.width / 2, axb.cx - 20 + (axb.xl - axb.xr) / 2), if(ax_hold, vc, axb.top + 22 * cu); size: if(ax_hold, screen.width, dax.ew - 74 - axb.xl - axb.xr), if(ax_hold, screen.height, 44 * cu); cursor: pointer; label: "Move the add-on panel" }
@@ -52,6 +55,16 @@ part AddonDock {
         on press axf_z { axf_kb = true; blur }
     }
 
+    //  The dock's bulge (`adb_*`, vitreus.plm; the glass is in bar_shapes.plm): slivers along the pill, under its own zone and its icons, that say where along it the pointer is.
+    //  Every one's leaving is before any one's entering: going from one to the next is both in the same frame, and the rule declared last is the one that counts.
+    repeat i in 0..10 {
+        zone box adk_bz.$i { at: adk.rcx + (1 - lm) * ((i + 0.5) * mix(adk.W, adk.H, lm) / 10 - mix(adk.W, adk.H, lm) / 2), adk.rcy + lm * ((i + 0.5) * mix(adk.W, adk.H, lm) / 10 - mix(adk.W, adk.H, lm) / 2); size: mix(mix(adk.W, adk.H, lm) / 10, adk.W, lm), mix(adk.H, mix(adk.W, adk.H, lm) / 10, lm); active: adk.g > 0.6 and bar_bulge }
+        on leave adk_bz.$i { adb_hot.$screen: 0 }
+    }
+    repeat i in 0..10 {
+        on enter adk_bz.$i { adb_hot.$screen: 1; adb_x.$screen: mix(adk.rcx + (1 - lm) * (clamp((i + 0.5) * mix(adk.W, adk.H, lm) / 10 - mix(adk.W, adk.H, lm) / 2, 0 - max(0, mix(adk.W, adk.H, lm) / 2 - 26 * dbu), max(0, mix(adk.W, adk.H, lm) / 2 - 26 * dbu))), screen.width - (adk.rcx + (1 - lm) * (clamp((i + 0.5) * mix(adk.W, adk.H, lm) / 10 - mix(adk.W, adk.H, lm) / 2, 0 - max(0, mix(adk.W, adk.H, lm) / 2 - 26 * dbu), max(0, mix(adk.W, adk.H, lm) / 2 - 26 * dbu)))), rt); adb_y.$screen: mix(adk.rcy + lm * (clamp((i + 0.5) * mix(adk.W, adk.H, lm) / 10 - mix(adk.W, adk.H, lm) / 2, 0 - max(0, mix(adk.W, adk.H, lm) / 2 - 26 * dbu), max(0, mix(adk.W, adk.H, lm) / 2 - 26 * dbu))), yo + vb - (adk.rcy + lm * (clamp((i + 0.5) * mix(adk.W, adk.H, lm) / 10 - mix(adk.W, adk.H, lm) / 2, 0 - max(0, mix(adk.W, adk.H, lm) / 2 - 26 * dbu), max(0, mix(adk.W, adk.H, lm) / 2 - 26 * dbu)))), bt); adb_l.$screen: min(52 * dbu, mix(adk.W, adk.H, lm)) }
+        on enter adk_bz.$i while adb_hot.$screen < 0.04 { adb_x.$screen: mix(adk.rcx + (1 - lm) * (clamp((i + 0.5) * mix(adk.W, adk.H, lm) / 10 - mix(adk.W, adk.H, lm) / 2, 0 - max(0, mix(adk.W, adk.H, lm) / 2 - 26 * dbu), max(0, mix(adk.W, adk.H, lm) / 2 - 26 * dbu))), screen.width - (adk.rcx + (1 - lm) * (clamp((i + 0.5) * mix(adk.W, adk.H, lm) / 10 - mix(adk.W, adk.H, lm) / 2, 0 - max(0, mix(adk.W, adk.H, lm) / 2 - 26 * dbu), max(0, mix(adk.W, adk.H, lm) / 2 - 26 * dbu)))), rt) ~16ms; adb_y.$screen: mix(adk.rcy + lm * (clamp((i + 0.5) * mix(adk.W, adk.H, lm) / 10 - mix(adk.W, adk.H, lm) / 2, 0 - max(0, mix(adk.W, adk.H, lm) / 2 - 26 * dbu), max(0, mix(adk.W, adk.H, lm) / 2 - 26 * dbu))), yo + vb - (adk.rcy + lm * (clamp((i + 0.5) * mix(adk.W, adk.H, lm) / 10 - mix(adk.W, adk.H, lm) / 2, 0 - max(0, mix(adk.W, adk.H, lm) / 2 - 26 * dbu), max(0, mix(adk.W, adk.H, lm) / 2 - 26 * dbu)))), bt) ~16ms; adb_l.$screen: min(52 * dbu, mix(adk.W, adk.H, lm)) ~16ms }
+    }
     zone box adk_bg { at: adk.rcx, adk.rcy; size: adk.W, adk.H; cursor: pointer; active: adk.g > 0.6 and dkm < 0.5; label: "Add-ons" }
     on press adk_bg { adk_down = 1; adk_drag = 0; adk_hx = pointer.x - adk.rcx; adk_hy = pointer.y - adk.rcy }
     on drag adk_bg while adk_down > 0.5 { adk_px = clamp(pointer.x - adk_hx, 0, screen.width); adk_py = clamp(pointer.y - adk_hy, 0, screen.height); adk_drag = if(adk_drag > 0.5 or abs(drag.dx) + abs(drag.dy) > 8, 1, 0) }

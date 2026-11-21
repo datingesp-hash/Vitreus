@@ -12,6 +12,16 @@ part BatteryCard {
         let b.t = ck + 8 * cu
         let b.ht = if(bc.health >= 80, #4cd964, if(bc.health >= 60, #f2c230, #e0655a))
 
+        //  One card under all of it, 288 wide (the drawer's widest, so 20.5 in from either side as the controls are) and 6 out from the content above and below;
+        //  its bottom is 20.5 above the drawer's (`bat_bot` keeps the room). Drawn like the Settings cards (see `card_fill`).
+        let b.ct = ck + 2 * cu
+        let b.ch = (bat_bot - 6) * cu
+        body { color: mix(mix(obsidian, ink, (veil) * 1.6), dd_cream, dd_k); opacity: (obs) * (1 - dd_k); border: 2.4 * cu * dd_k, ink; shadow: 0, 2 * cu, 7 * cu, 40% * (1 - dd_k), #000000; show: obs > 0.004; box { from: pcx - 144 * cu, b.ct; size: 288 * cu, b.ch; corner: 21 * cu } }
+        DdCard(pcx, b.ct + b.ch / 2, 288 * cu, b.ch, 611.5, mix(mix(obsidian, ink, (veil) * 1.6), dd_cream, dd_k), (obs) * dd_k, cu) { show: dd_k > 0.004 and (obs > 0.004) }      // Doodle: the hand-drawn card
+        box { from: pcx - 144 * cu, b.ct; size: 288 * cu, b.ch; corner: 21 * cu; color: obsidian; opacity: card_fill * (1 - obs) }      // the card's deeper backing (see `card_fill`)
+        box { from: pcx - 144 * cu, b.ct; size: 288 * cu, b.ch; corner: 21 * cu; color: ink; opacity: (veil) * (1 - obs) }
+        box { from: pcx - 144 * cu, b.ct; size: 288 * cu, b.ch; corner: 21 * cu; stroke: 1 * cu; color: ink; opacity: hair * (1 - dd_k) }
+
         //  The charge: the Power window's card for this computer.
         group {
             move: floor(b.x0 + 0.5), floor(b.t + 0.5)
@@ -20,6 +30,7 @@ part BatteryCard {
 
         //  Health: the number big in its colour (green from 80 %, yellow from 60 %, red under), what it holds and a gauge of it, and what the battery is.
         text "HEALTH" { at: floor(b.x0 + 2 * cu + 0.5), floor(b.t + 66 * cu + 0.5); anchor: left center; size: 11; weight: 700; color: faint; family: "Space Grotesk" }
+        box { at: b.x0 + 138 * cu, b.t + 111 * cu; size: 276 * cu, 66 * cu; corner: 15 * cu; color: obsidian; opacity: card_fill * (1 - obs) }      // the card's deeper backing (see `card_fill`)
         box { at: b.x0 + 138 * cu, b.t + 111 * cu; size: 276 * cu, 66 * cu; corner: 15 * cu; color: ink; opacity: 8% }
         box { at: b.x0 + 138 * cu, b.t + 111 * cu; size: 276 * cu, 66 * cu; corner: 15 * cu; stroke: 1 * cu; color: ink; opacity: 10% }
         text number(bc.health, 0, "%") { at: floor(b.x0 + 16 * cu + 0.5), floor(b.t + 102 * cu + 0.5); anchor: left center; size: 25; weight: 700; color: b.ht; family: "Space Grotesk"; show: bc.health >= 0 }
@@ -52,7 +63,8 @@ part BatteryCard {
                 on press bc_mz.$i { emit bc_mode(i) }
             }
         }
-        text bc_desc { at: floor(b.x0 + 2 * cu + 0.5), floor(b.t + 218 * cu + 0.5); anchor: left top; size: 11.5; width: 272 * cu; lines: 2; color: faint; family: "Space Grotesk"; show: bc.nmodes > 0 }
+        text bc_desc { at: floor(b.x0 + 138 * cu + 0.5), floor(b.t + 218 * cu + 0.5); anchor: center top; align: center; size: 11.5; width: 272 * cu; lines: 2; color: faint; measure: bc_dsc; family: "Space Grotesk"; show: bc.nmodes > 0 }
+        text "Ag" { at: 0, 0; anchor: left top; size: 11.5; lines: 1; opacity: 0; measure: bc_l1; family: "Space Grotesk" }      // unseen: one line's height (bc.dl)
 
         //  The levels: a row each, its name, the value, and − / + either side of it (5 % a step; written a moment after the last press).
         repeat r in 0..2 {
@@ -60,6 +72,7 @@ part BatteryCard {
             let val = if(r == 0, bc.start, bc.end)
             group {
                 show: bc.thr and (r == 1 or bc.hasstart)
+                box { at: b.x0 + 138 * cu, ry; size: 276 * cu, 32 * cu; corner: 12 * cu; color: obsidian; opacity: card_fill * (1 - obs) }      // the card's deeper backing (see `card_fill`)
                 box { at: b.x0 + 138 * cu, ry; size: 276 * cu, 32 * cu; corner: 12 * cu; color: ink; opacity: 8% }
                 text pick(r, "Start charging below", "Stop charging at") { at: floor(b.x0 + 14 * cu + 0.5), floor(ry + 0.5); anchor: left center; size: 12; weight: 600; width: 150 * cu; lines: 1; color: ink; family: "Space Grotesk" }
                 text number(val, 0, " %") { at: floor(b.x0 + 222 * cu + 0.5), floor(ry + 0.5); anchor: center; align: center; size: 13; weight: 700; color: mint; family: "Space Grotesk" }
@@ -73,13 +86,14 @@ part BatteryCard {
                 }
             }
         }
-        text "Changes ask for your password" { at: floor(b.x0 + 2 * cu + 0.5), floor(b.t + (bc.ty + 6) * cu + 0.5); anchor: left center; size: 10.5; color: faint; opacity: 80%; family: "Space Grotesk"; show: bc.opt and bc.ask and not bc.bios and not bc.busy and not bc.err and not bc.pwask }
-        text "Changes need your BIOS password" { at: floor(b.x0 + 2 * cu + 0.5), floor(b.t + (bc.ty + 6) * cu + 0.5); anchor: left center; size: 10.5; color: faint; opacity: 80%; family: "Space Grotesk"; show: bc.opt and bc.bios and not bc.busy and not bc.err and not bc.pwask }
-        text bc_err { at: floor(b.x0 + 2 * cu + 0.5), floor(b.t + (bc.ty + 6) * cu + 0.5); anchor: left center; size: 10.5; width: 272 * cu; lines: 1; color: alert; family: "Space Grotesk"; show: bc.opt and not bc.busy and bc.err and not bc.pwask }
+        text "Changes ask for your password" { at: floor(b.x0 + 138 * cu + 0.5), floor(b.t + (bc.ty + 6) * cu + 0.5); anchor: center; align: center; size: 10.5; color: faint; opacity: 80%; family: "Space Grotesk"; show: bc.opt and bc.ask and not bc.bios and not bc.busy and not bc.err and not bc.pwask }
+        text "Changes need your BIOS password" { at: floor(b.x0 + 138 * cu + 0.5), floor(b.t + (bc.ty + 6) * cu + 0.5); anchor: center; align: center; size: 10.5; color: faint; opacity: 80%; family: "Space Grotesk"; show: bc.opt and bc.bios and not bc.busy and not bc.err and not bc.pwask }
+        text bc_err { at: floor(b.x0 + 138 * cu + 0.5), floor(b.t + (bc.ty + 6) * cu + 0.5); anchor: center; align: center; size: 10.5; width: 272 * cu; lines: 1; color: alert; family: "Space Grotesk"; show: bc.opt and not bc.busy and bc.err and not bc.pwask }
         //  The BIOS password, when a change waits for it: a field, Apply and Cancel, in place of the line above.
         group {
             show: bc.pwask
             let py = b.t + (bc.ty + 16) * cu
+            box { at: b.x0 + 88 * cu, py; size: 176 * cu, 32 * cu; corner: 12 * cu; color: obsidian; opacity: card_fill * (1 - obs) }      // the card's deeper backing (see `card_fill`)
             box { at: b.x0 + 88 * cu, py; size: 176 * cu, 32 * cu; corner: 12 * cu; color: ink; opacity: 8% }
             box { at: b.x0 + 88 * cu, py; size: 176 * cu, 32 * cu; corner: 12 * cu; stroke: 1.2 * cu; color: mint; opacity: 45% }
             input bc_bpw { at: floor(b.x0 + 12 * cu + 0.5), floor(py - 7 * cu + 0.5); width: 152 * cu; size: 13; color: ink; family: "Space Grotesk"; placeholder: "BIOS password"; secret: true; label: "BIOS password"; agent: hidden }
@@ -93,7 +107,7 @@ part BatteryCard {
             zone box bc_bno { at: b.x0 + 262 * cu, py; size: 28 * cu, 28 * cu; corner: 14 * cu; cursor: pointer; active: bc.pwask and panel == battery; label: "Cancel" }
             on press bc_bno { emit bc_bcancel }
         }
-        text "Applying…" { at: floor(b.x0 + 2 * cu + 0.5), floor(b.t + (bc.ty + 6) * cu + 0.5); anchor: left center; size: 10.5; color: mint; family: "Space Grotesk"; show: bc.opt and bc.busy }
+        text "Applying…" { at: floor(b.x0 + 138 * cu + 0.5), floor(b.t + (bc.ty + 6) * cu + 0.5); anchor: center; align: center; size: 10.5; color: mint; family: "Space Grotesk"; show: bc.opt and bc.busy }
     }
     //  ── The battery panel: END ──
 }

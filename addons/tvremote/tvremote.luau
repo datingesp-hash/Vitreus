@@ -53,10 +53,10 @@ local was_open = false
 -- Where the field is, from the content's top left, in the pixels the scene draws it at: the design box (260 x 406 units) is scaled to the panel and centred, as in tvremote.plm.
 local function field_box()
     local w, h = tonumber(fact.slot_w) or 0, tonumber(fact.slot_h) or 0
-    local W0, H0 = 260 * U, 406 * U
+    local W0, H0 = 216 * U, 406 * U
     local sc = math.max(0.5, math.min(2.5, math.min(w / W0, h / H0)))
     if w <= 0 or h <= 0 then sc = 1 end
-    local l = (w - sc * W0) / 2 + 22 * U * sc
+    local l = (w - sc * W0) / 2
     local t = 61 * U * sc
     return { "fact axf_l " .. math.floor(l), "fact axf_t " .. math.floor(t), "fact axf_r " .. math.floor(l), "fact axf_h " .. math.floor(34 * U * sc) }
 end
@@ -209,6 +209,9 @@ local function on_line(line)
             text.setup_s = #found > 0 and "Pick yours, or type its address in the field." or "None found. Type its address in the field (the TV's Settings > Network shows it)."
         end
     elseif ev.ev == "state" then
+        -- "Add a TV" stays until a TV is picked or it is cancelled (both leave it through use(), which asks the helper where things stand): the
+        -- TV still connected behind it kept saying `ready` (a volume change is enough), and that threw the screen away
+        if st == 2 then return end
         local s = ev.stage
         if s == "ready" then show_ready(ev)
         elseif s == "connecting" then

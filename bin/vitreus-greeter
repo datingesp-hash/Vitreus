@@ -14,6 +14,7 @@
 #                                 it as you (your fonts, face and palette) and copies it into place through pkexec, which asks for the password (Vitreus's
 #                                 polkit agent shows the prompt). 126 or 127: the password was cancelled.
 set -eu
+# (pkexec refuses, with no prompt, when $SHELL is not in /etc/shells: pleamar-wm sets it to its own fish wrapper. So it is given /bin/sh.)
 theme=${VITREUS_GREETER_THEME:-/usr/share/sddm/themes/vitreus}      # (another, for testing)
 shared=$(sed -n 's/^shared=//p' "$theme/theme.conf" 2> /dev/null | head -1)
 [ -n "$shared" ] || shared=/usr/local/share/vitreus-greeter
@@ -31,13 +32,18 @@ theme_file() {
     f=$(grep -l '^Current=' /etc/sddm.conf.d/*.conf /etc/sddm.conf 2> /dev/null | tail -1 || true)
     [ -n "$f" ] && echo "$f" || echo /etc/sddm.conf.d/theme.conf
 }
-# As root: SDDM uses this greeter. The file that said which theme was in use is kept first (once) in the user's folder ($1), so `unuse` can put it back.
+# As root: SDDM uses this greeter. The NAME of the theme in use is kept first (once), in a folder only root can write, so `unuse` can put it back.
+# (A copy of the whole file used to be kept in the user's folder and copied back over /etc as root: SDDM's config holds commands it runs as
+# root, so anything running as the user could have had its own put there. Root also wrote that copy through whatever link stood at its name.)
+prev_dir=/var/lib/vitreus-greeter
 use_vitreus() {
-    [ "$(current_theme)" = vitreus ] && return 0
+    prev=$(current_theme)
+    [ "$prev" = vitreus ] && return 0
     f=$(theme_file)
     mkdir -p "$(dirname "$f")"
-    bak=$1/$(basename "$f").before-vitreus
-    [ -f "$f" ] && [ ! -f "$bak" ] && cp "$f" "$bak"
+    if [ -n "$prev" ] && [ ! -s "$prev_dir/previous-theme" ]; then
+        install -d -o root -g root -m 755 "$prev_dir" && printf '%s\n' "$prev" > "$prev_dir/previous-theme" && chmod 644 "$prev_dir/previous-theme"
+    fi
     if [ -f "$f" ] && grep -q '^Current=' "$f"; then sed -i 's|^Current=.*|Current=vitreus|' "$f"
     elif [ -f "$f" ] && grep -q '^\[Theme\]' "$f"; then sed -i 's|^\[Theme\]|[Theme]\nCurrent=vitreus|' "$f"
     else printf '\n[Theme]\nCurrent=vitreus\n' >> "$f"; fi
@@ -47,8 +53,11 @@ unuse_vitreus() {
     [ "$(current_theme)" = vitreus ] || return 0
     f=$(grep -l '^Current=vitreus' /etc/sddm.conf.d/*.conf /etc/sddm.conf 2> /dev/null | tail -1 || true)
     [ -n "$f" ] || return 0
-    bak=$1/$(basename "$f").before-vitreus
-    if [ -f "$bak" ] && ! grep -q '^Current=vitreus' "$bak"; then cp -f "$bak" "$f"
+    prev=$(head -n 1 "$prev_dir/previous-theme" 2> /dev/null)
+    # (an install from before kept the whole file in the user's folder: only the theme's name is read from it, nothing else of it is used)
+    [ -n "$prev" ] || prev=$(cat "$1"/*.before-vitreus 2> /dev/null | awk '/^\[/ { sec = $0 } sec == "[Theme]" && /^Current=/ { sub(/^Current=/, ""); v = $0 } END { print v }')
+    case $prev in *[!A-Za-z0-9._-]*|""|vitreus|.*) prev= ;; esac
+    if [ -n "$prev" ] && [ -d "$themes/$prev" ]; then sed -i "s|^Current=vitreus\$|Current=$prev|" "$f"
     else sed -i '/^Current=vitreus$/d' "$f"; fi
 }
 
@@ -58,14 +67,16 @@ is_video() {
 writable() { [ -d "$shared" ] && [ -w "$shared" ]; }
 need_folder() {
     writable && return 0
-    echo "the login screen's folder ($shared) is missing or not yours: install the login screen again (sddm/install.sh)" >&2
+    echo "the login screen is off: turn it on in Settings > Greeter" >&2
     exit 3
 }
+# ready: the installed greeter reads the folder, and carries the repository's picture (an older one carried the background it was installed with)
+is_ready() { grep -q 'ownFiles' "$theme/Main.qml" 2> /dev/null && grep -q '^stock=true' "$theme/theme.conf" 2> /dev/null; }
 
 case "${1:-}" in
 info)
     # ready: the installed greeter reads the folder, and carries the repository's picture (an older one carried the background it was installed with)
-    ready=0; grep -q 'ownFiles' "$theme/Main.qml" 2> /dev/null && grep -q '^stock=true' "$theme/theme.conf" 2> /dev/null && ready=1
+    ready=0; is_ready && ready=1
     w=0; writable && w=1
     installed=0; [ -f "$theme/Main.qml" ] && installed=1
     active=0; [ "$(current_theme)" = vitreus ] && active=1
@@ -76,7 +87,8 @@ info)
         [ -f "$q/qml/QtMultimedia/qmldir" ] && ls "$q"/plugins/multimedia/*.so > /dev/null 2>&1 && mm=1 && break
     done
     # what SDDM goes back to when this one is turned off: the theme in the kept file, or SDDM's own
-    other=$(cat "$shared"/*.before-vitreus 2> /dev/null | awk '/^\[/ { sec = $0 } sec == "[Theme]" && /^Current=/ { sub(/^Current=/, ""); v = $0 } END { print v }')
+    other=$(cat /var/lib/vitreus-greeter/previous-theme 2> /dev/null | head -n 1)
+    [ -n "$other" ] || other=$(cat "$shared"/*.before-vitreus 2> /dev/null | awk '/^\[/ { sec = $0 } sec == "[Theme]" && /^Current=/ { sub(/^Current=/, ""); v = $0 } END { print v }')
     if [ -f "$shared/background.jpg" ]; then
         kind=picture; [ -f "$shared/background.mp4" ] && kind=video
         name=$(cat "$shared/.source-name" 2> /dev/null || true)
@@ -122,6 +134,7 @@ default)
     rm -f "$shared/background.jpg" "$shared/background.mp4" "$shared/.source-name"
     ;;
 clock)
+    case "${2:-}" in 24|12) ;; *) echo "usage: vitreus-greeter clock 24|12" >&2; exit 1 ;; esac
     need_folder
     case "${2:-}" in
         24) rm -f "$shared/clock-12"; : > "$shared/clock-24"; chmod 644 "$shared/clock-24" ;;
@@ -138,9 +151,12 @@ install)
     tmp=$(mktemp -d)
     trap 'rm -rf "$tmp"' EXIT
     "$build" "$tmp/vitreus" > /dev/null
-    if writable; then "$self" adopt "$tmp/vitreus/background.jpg" || true; fi
+    # (with the folder not the user's yet, the installed copy is kept aside and adopted once install-root has made the folder theirs)
+    if writable; then "$self" adopt "$tmp/vitreus/background.jpg" || true
+    elif [ -f "$theme/Main.qml" ]; then cp -r "$theme" "$tmp/before"; fi
     code=0
-    pkexec "$self" install-root "$tmp/vitreus" "$(id -un)" || code=$?
+    SHELL=/bin/sh pkexec "$self" install-root "$tmp/vitreus" "$(id -un)" || code=$?
+    if [ "$code" -eq 0 ] && [ -d "$tmp/before" ]; then VITREUS_GREETER_THEME=$tmp/before "$self" adopt "$tmp/vitreus/background.jpg" || true; fi
     exit $code
     ;;
 adopt)
@@ -161,12 +177,12 @@ use)
     [ "$(id -u)" -ne 0 ] || { echo "run it as yourself: it asks for the password itself" >&2; exit 1; }
     [ "$2" = off ] || [ -f "$themes/vitreus/Main.qml" ] || { echo "the login screen is not installed: Apply installs it" >&2; exit 1; }
     code=0
-    pkexec "$self" use-root "$2" || code=$?
+    SHELL=/bin/sh pkexec "$self" use-root "$2" || code=$?
     exit $code
     ;;
 use-root)
     [ "$(id -u)" -eq 0 ] || { echo "use-root is run by use, through pkexec" >&2; exit 1; }
-    sh=$(sed -n 's/^shared=//p' "$themes/vitreus/theme.conf" 2> /dev/null | head -1); [ -n "$sh" ] || sh=/usr/local/share/vitreus-greeter
+    sh=/usr/local/share/vitreus-greeter      # (fixed, not read from theme.conf: the root half takes nothing from a file the user built)
     case "${2:-}" in
         on) use_vitreus "$sh" ;;
         off) unuse_vitreus "$sh" ;;
@@ -187,14 +203,36 @@ install-root)
     chmod -R u=rwX,go=rX "$themes/vitreus.new"
     rm -rf "$themes/vitreus"
     mv "$themes/vitreus.new" "$themes/vitreus"
-    sh=$(sed -n 's/^shared=//p' "$themes/vitreus/theme.conf" | head -1); [ -n "$sh" ] || sh=/usr/local/share/vitreus-greeter
+    sh=/usr/local/share/vitreus-greeter      # (fixed: given another path by the theme.conf the user built, `install -d -o` handed that folder to the user)
     install -d -o "$user" -m 755 "$sh"
     use_vitreus "$sh"
     echo "installed"
     ;;
 preview)
     [ -f "$theme/Main.qml" ] || { echo "the login screen is not installed" >&2; exit 1; }
-    QT_QPA_PLATFORM=xcb setsid -f sddm-greeter-qt6 --test-mode --theme "$theme" < /dev/null > /dev/null 2>&1
+    # SDDM's test mode opens one window per monitor: a copy of the installed greeter whose windows on the other monitors close themselves (an older one
+    # lacks that, so it is added to the copy; the installed greeter is left as it is). The copy is replaced at every Test.
+    dir=${XDG_RUNTIME_DIR:-/tmp}/vitreus-greeter-test
+    rm -rf "$dir"
+    cp -r "$theme" "$dir"
+    if ! grep -q 'test-mode' "$dir/Main.qml"; then
+        awk '{ l[NR] = $0 } $0 ~ /^}[[:space:]]*$/ { last = NR } END {
+            for (i = 1; i <= NR; i++) {
+                if (i == last) {
+                    print "    Item {"
+                    print "        id: vitreusTestOnly"
+                    print "        Timer {"
+                    print "            interval: 0"
+                    print "            running: typeof primaryScreen !== \"undefined\" && !primaryScreen && Qt.application.arguments.indexOf(\"--test-mode\") >= 0"
+                    print "            onTriggered: if (vitreusTestOnly.Window.window) vitreusTestOnly.Window.window.close()"
+                    print "        }"
+                    print "    }"
+                }
+                print l[i]
+            }
+        }' "$theme/Main.qml" > "$dir/Main.qml"
+    fi
+    QT_QPA_PLATFORM=xcb setsid -f sddm-greeter-qt6 --test-mode --theme "$dir" < /dev/null > /dev/null 2>&1
     ;;
 *)
     sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' >&2

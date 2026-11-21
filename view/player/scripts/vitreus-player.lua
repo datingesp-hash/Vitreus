@@ -305,6 +305,11 @@ local function icon(out, name, x, y, colour, o)
         line(2.1, { 3.5, -7 }, { 6.5, -4 }, { 3.5, -1 })
         line(2.1, { 7.5, -1.5 }, { 7.5, 4 }, { -6.5, 4 })
         line(2.1, { -3.5, 1 }, { -6.5, 4 }, { -3.5, 7 })
+    elseif name == "cast" then                                     -- a screen, its corner below on the left giving way to waves going out to it
+        line(2.1, { -9.5, -2 }, { -9.5, -7 }, { 9.5, -7 }, { 9.5, 7 }, { 2.5, 7 })
+        ring(-9.5, 7, 4.5, 2, -90, 0)
+        ring(-9.5, 7, 8.5, 2, -90, 0)
+        out[#out + 1] = shape(rr(x - 10.5 * s, y + 6 * s, 2.2 * s, 2.2 * s, 1.1 * s), colour, o)
     elseif name == "info" then                                     -- an i in a ring
         ring(0, 0, 8.5, 2)
         bar(0, 2, 2.4, 7, 1)
@@ -345,11 +350,23 @@ end
 local render
 local function hit(x, y, w, h, id) st.hits[#st.hits + 1] = { x = x, y = y, w = w, h = h, id = id } end
 
+-- ── while casting, the player is the TV's remote: what it shows is the TV's (asked every second, `catt info`), what it is told goes to the TV ──
+local tv = { on = false }
+local function tv_now()                                   -- where the TV is now: the last answer, and the time since, while it plays
+    if not tv.dur then return tv.pos or 0 end
+    if tv.paused then return tv.pos or 0 end
+    return math.min(tv.dur, (tv.pos or 0) + (now() - (tv.at or now())))
+end
+
 local function draw_controls(out)
     local s, w, h = st.s, st.w, st.h
     local pos, dur = prop("time-pos", 0), prop("duration", 0)
     local paused, ended = prop("pause", false), prop("eof-reached", false)
     local vol, muted = prop("volume", 100), prop("mute", false)
+    if tv.on then
+        pos, dur, paused, ended = tv_now(), tv.dur or dur, tv.paused and true or false, false
+        vol, muted = tv.vol or vol, tv.muted and true or false
+    end
     local full = prop("fullscreen", false)
     local count, at = prop("playlist-count", 1), prop("playlist-pos", 0) + 1
 
@@ -426,6 +443,7 @@ local function draw_controls(out)
     -- from the right
     local r = px + pw - 30 * s - B / 2
     button("full", full and "unfull" or "full", r, full and "Leave full screen (F)" or "Full screen (F)"); r = r - G
+    button("cast", "cast", r, st.casting and "Stop playing on the TV (Shift+T)" or "Play on the TV (T)", true, st.casting or st.pick); st.cast_x, st.pill_y = r, py; r = r - G
     button("info", "info", r, "Details (I)", true, st.info); r = r - G
     local looping = prop("loop-file", "no")
     button("loop", "loop", r, "Loop (L)", true, looping ~= "no" and looping ~= false); r = r - G
@@ -667,7 +685,7 @@ local function draw_peek(out)
         end
     end
     hit(cx - 130 * u, my - 126 * u, 260 * u, 240 * u, "peek")
-    -- why, on View's card, and the way to the file
+    -- why, on View's card, and the way to the file (none for a stream: start-file leaves err_path empty for a web link)
     card(out, cx - 250 * u, my + 130 * u, 500 * u, 68 * u, corner(20 * u))
     out[#out + 1] = text(cx, my + 150 * u, 5, 18 * u, C.ink, 1, "This video could not be played", true)
     out[#out + 1] = text(cx, my + 178 * u, 5, 13 * u, C.faint, 0.7, st.err)
@@ -684,17 +702,64 @@ local function draw_peek(out)
     end
 end
 
+-- ── Cast's list: which TV to play it on (view.plm's, the same), over the pill by the Cast button ──
+local cast_tvs = {}
+local function draw_picker(out)
+    if not st.pick then return end
+    st.moved = now()                                      -- the controls stay while it is open
+    local s = st.s
+    local w = 360 * s
+    local nrows = math.max(#cast_tvs, 1)
+    local h = (66 + nrows * 60) * s
+    local x = math.min((st.cast_x or (st.w - 400 * s)) + 40 * s - w, st.w - w - 16 * s)
+    local y = (st.pill_y or (st.h - 70 * s)) - 14 * s - h
+    card(out, x, y, w, h, corner(18 * s))
+    hit(x, y, w, h, "pick")
+    out[#out + 1] = text(x + 22 * s, y + 30 * s, 4, 16 * s, C.ink, 1, "Play on", true)
+    if st.scanning then out[#out + 1] = text(x + w - 22 * s, y + 30 * s, 6, 13 * s, C.faint, 0.7, "looking…") end
+    if #cast_tvs == 0 then
+        out[#out + 1] = text(x + 22 * s, y + 88 * s, 4, 14.5 * s, C.ink, 0.6, st.scanning and "Looking for TVs…" or "No TVs found on this network")
+        return
+    end
+    for i, tv in ipairs(cast_tvs) do
+        local ry = y + 58 * s + (i - 1) * 60 * s
+        local id = "tv" .. i
+        if st.hover == id then out[#out + 1] = shape(rr(x + 10 * s, ry, 340 * s, 58 * s, corner(14 * s)), C.mint, 0.2) end
+        if tv.on then out[#out + 1] = shape(rr(x + 23.5 * s, ry + 24.5 * s, 9 * s, 9 * s, 4.5 * s), C.mint, 1) end
+        out[#out + 1] = text(x + 46 * s, ry + 20 * s, 4, 16 * s, C.ink, 1, tv.name, true)
+        out[#out + 1] = text(x + 46 * s, ry + 40 * s, 4, 13 * s, C.ink, 0.62, tv.kind)
+        hit(x + 10 * s, ry, 340 * s, 58 * s, id)
+    end
+end
+
+local function draw_remote(out)
+    if not tv.on then return end
+    local s, w, h = st.s, st.w, st.h
+    out[#out + 1] = shape(rr(0, 0, w, h, 0), C.deep, 0.78)
+    local cw, ch = 440 * s, 112 * s
+    local x, y = (w - cw) / 2, (h - ch) / 2 - 30 * s
+    local keep = st.shown
+    st.shown = 1
+    card(out, x, y, cw, ch, corner(22 * s))
+    icon(out, "cast", x + 48 * s, y + ch / 2, C.mint, 1)
+    out[#out + 1] = text(x + 84 * s, y + 44 * s, 4, 20 * s, C.ink, 1, "Playing on " .. (tv.name or "the TV"), true)
+    out[#out + 1] = text(x + 84 * s, y + 72 * s, 4, 14 * s, C.ink, 0.65, tv.paused and "Paused there  ·  the buttons here control it" or "The buttons here control it")
+    st.shown = keep
+end
+
 render = function()
     if st.w <= 0 then return end
     local keep = st.shown
     st.hits, st.tip = {}, nil
     local out = {}
+    draw_remote(out)
     if st.shown > 0.01 then
         draw_controls(out)
         draw_info(out)
     end
     st.shown = 1                                          -- these stay up whatever the controls do
     draw_toast(out)
+    draw_picker(out)
     draw_peek(out)
     st.shown = keep
     draw_tip(out)
@@ -744,16 +809,118 @@ local function under(x, y)
         if h.id == "pill" and x >= h.x and x <= h.x + h.w and y >= h.y and y <= h.y + h.h then return "pill" end
     end
 end
+local utils = require "mp.utils"
+-- a word to the TV (catt -d its address ...); what the player shows is changed at once, and the TV's answers are not taken for two seconds after,
+-- so a step does not jump back while the TV catches up
+local function tv_cmd(...)
+    local args = { "catt", "-d", tv.host, ... }
+    tv.hold = now() + 2
+    mp.command_native_async({ name = "subprocess", args = args, capture_stdout = true, capture_stderr = true, playback_only = false }, function(ok, r)
+        if tv.on and not (ok and r and r.status == 0) then say("The TV did not answer", 2) end
+        wake()
+    end)
+end
+local function tv_seek(t)
+    t = math.max(0, math.min(t, (tv.dur or t + 1) - 1))
+    tv.pos, tv.at = t, now()
+    tv_cmd("seek", tostring(math.floor(t)))
+    say(clock(t), 0.8)
+end
+local function tv_toggle()
+    tv.pos, tv.at = tv_now(), now()
+    tv.paused = not tv.paused
+    tv_cmd(tv.paused and "pause" or "play")
+end
+local function tv_vol(v)
+    tv.vol = math.max(0, math.min(100, math.floor(v + 0.5)))
+    tv.muted = false
+    tv.hold = now() + 2
+    say(string.format("TV sound %d %%", tv.vol), 0.8)
+    if tv.vt then tv.vt:kill() end                       -- (a drag sends the last of it, not every step)
+    tv.vt = mp.add_timeout(0.25, function() tv.vt = nil; tv_cmd("volume", tostring(tv.vol)) end)
+end
+local function tv_mute()
+    tv.muted = not tv.muted
+    tv_cmd("volumemute", tv.muted and "true" or "false")
+    say(tv.muted and "TV muted" or "TV sound on", 1)
+end
+local remote_stop
+-- the TV's answer, every second: where it is, how long, paused or not, its sound. It ending (or something else put on it) ends the remote.
+local function tv_poll()
+    if not tv.on or tv.busy then return end
+    tv.busy = true
+    mp.command_native_async({ name = "subprocess", args = { "catt", "-d", tv.host, "info", "-j" }, capture_stdout = true, capture_stderr = true, playback_only = false }, function(ok, r)
+        tv.busy = false
+        if not tv.on then return end
+        local j = ok and r and r.status == 0 and utils.parse_json(r.stdout or "") or nil
+        if type(j) ~= "table" or not j.player_state then
+            tv.fails = (tv.fails or 0) + 1
+            if tv.seen and tv.fails >= 4 then remote_stop("The TV stopped playing it") end
+            return
+        end
+        tv.fails = 0
+        local state = j.player_state
+        if state == "PLAYING" or state == "PAUSED" or state == "BUFFERING" then tv.seen = true end
+        if state == "IDLE" and tv.seen then
+            remote_stop(j.idle_reason == "FINISHED" and ("Finished on " .. tv.name) or "The TV stopped playing it")
+            return
+        end
+        if tv.content and j.content_id and j.content_id ~= tv.content and tv.seen then remote_stop("The TV is playing something else now") return end
+        tv.content = tv.content or j.content_id
+        if now() < (tv.hold or 0) then return end
+        if tonumber(j.duration) then tv.dur = tonumber(j.duration) end
+        if tonumber(j.current_time) then tv.pos, tv.at = tonumber(j.current_time), now() end
+        if state == "PAUSED" then tv.paused = true elseif state == "PLAYING" then tv.paused = false end
+        if tonumber(j.volume_level) then tv.vol = math.floor(tonumber(j.volume_level) * 100 + 0.5) end
+        if j.volume_muted ~= nil then tv.muted = j.volume_muted and true or false end
+        wake()
+    end)
+end
+-- the keys that would move the video here move the TV's instead, while it plays there
+local REMOTE_KEYS = {
+    { "SPACE", function() tv_toggle() end }, { "k", function() tv_toggle() end },
+    { "LEFT", function() tv_seek(tv_now() - 5) end }, { "RIGHT", function() tv_seek(tv_now() + 5) end },
+    { "Shift+LEFT", function() tv_seek(tv_now() - 30) end }, { "Shift+RIGHT", function() tv_seek(tv_now() + 30) end },
+    { "HOME", function() tv_seek(0) end },
+    { "UP", function() tv_vol((tv.vol or 50) + 5) end }, { "DOWN", function() tv_vol((tv.vol or 50) - 5) end },
+    { "m", function() tv_mute() end },
+}
+local function remote_start(dev, at)
+    tv = { on = true, host = dev.host, name = dev.name, pos = at, at = now(), dur = prop("duration", nil), paused = false, fails = 0 }
+    mp.set_property_bool("pause", true)
+    for i, k in ipairs(REMOTE_KEYS) do mp.add_forced_key_binding(k[1], "tv-remote-" .. i, function() k[2](); wake() end) end
+    tv.timer = mp.add_periodic_timer(1, tv_poll)
+    wake()
+end
+remote_stop = function(words)
+    if tv.timer then tv.timer:kill() end
+    if tv.vt then tv.vt:kill() end
+    local was = tv.pos and tv_now()
+    for i = 1, #REMOTE_KEYS do mp.remove_key_binding("tv-remote-" .. i) end
+    tv = { on = false }
+    st.casting = false
+    if was and was > 0 then mp.commandv("seek", tostring(math.floor(was)), "absolute") end      -- here, from where the TV got to
+    if words then say(words, 2.5) end
+    wake()
+end
+-- the video here stays still while the TV plays it
+mp.observe_property("pause", "bool", function(_, p) if tv.on and p == false then mp.set_property_bool("pause", true) end end)
+
 local function seek_to(x, exact)
     if not st.seek_x then return end
-    local dur = prop("duration", 0)
+    local dur = tv.on and (tv.dur or 0) or prop("duration", 0)
     if dur <= 0 then return end
     local k = math.max(0, math.min(1, (x - st.seek_x) / st.seek_w))
+    if tv.on then
+        if exact then tv_seek(k * dur) else tv.pos, tv.at, tv.hold = k * dur, now(), now() + 2 end
+        return
+    end
     mp.commandv("seek", tostring(k * dur), exact and "absolute+exact" or "absolute+keyframes")
 end
 local function vol_to(x)
     if not st.vol_x then return end
     local k = math.max(0, math.min(1, (x - st.vol_x) / st.vol_w))
+    if tv.on then tv_vol(k * 100) return end
     mp.set_property_number("volume", math.floor(k * 100 + 0.5))
     if prop("mute", false) then mp.set_property_bool("mute", false) end
 end
@@ -795,8 +962,95 @@ local function toggle_loop()
     say(on and "Looping this one" or "Not looping")
 end
 
+-- Cast: what plays here goes on to the TV (a Chromecast, or a TV with one built in) with catt, from where it is now, and here it pauses.
+-- A web link is handed over as it is (catt finds the video on the page with yt-dlp, and the TV fetches it itself); a file of this computer is served to
+-- the TV by catt (below).
+-- The TV is catt's default (`catt set_default`), or else the first one it finds. Shift+T, or the lit button, stops the TV.
+local function has_catt()
+    local r = mp.command_native({ name = "subprocess", args = { "sh", "-c", "command -v catt" }, capture_stdout = true, playback_only = false })
+    return r and r.status == 0
+end
+-- catt serves a file of this computer to the TV for as long as the TV plays it, so it is started apart (setsid) and outlives the player; it is watched
+-- for ten seconds, and if it gave up by then (the TV said no, it was not there), its last words are said. (View's own Cast does the same: view.luau, CAST.)
+-- Cast opens the list of what is on the network (`catt scan`; TVs and screens first, speakers, which only play the sound, after them), the one used last
+-- marked; the one chosen is kept as catt's default, which View's list marks too. A device is named by its address: a name can end in spaces.
+local CAST = 'log=$(mktemp); setsid catt -d "$3" cast -t "$2" "$1" > "$log" 2>&1 < /dev/null & pid=$!; i=0; '
+    .. 'while [ $i -lt 20 ] && kill -0 $pid 2> /dev/null; do sleep 0.5; i=$((i + 1)); done; '
+    .. 'if kill -0 $pid 2> /dev/null; then rm -f "$log"; exit 0; fi; wait $pid; c=$?; '
+    .. 'if [ $c -eq 0 ]; then rm -f "$log"; exit 0; fi; grep -v "^[[:space:]]*$" "$log" | tail -n 1; rm -f "$log"; exit 1'
+local SCAN = 'command -v catt > /dev/null 2>&1 || exit 3; '
+    .. 'd=$(sed -n "s/^device *= *//p" "${XDG_CONFIG_HOME:-$HOME/.config}/catt/catt.cfg" 2> /dev/null | head -n 1); printf "default\\t%s\\n" "$d"; '
+    .. 'catt scan -j 2> /dev/null | jq -r \'to_entries[] | [.value.host, (.value.friendly_name | gsub("^\\\\s+|\\\\s+$"; "")), (.value.manufacturer // ""), (.value.model_name // "")] | @tsv\''
+local SPEAKER = { "mini", "audio", "speaker", "home$", "max$", "chromecast audio" }
+local cast_host = nil
+local function scan()
+    st.scanning = true
+    cast_tvs = {}
+    mp.command_native_async({ name = "subprocess", args = { "sh", "-c", SCAN }, capture_stdout = true, playback_only = false }, function(ok, r)
+        st.scanning = false
+        if not ok or not r then wake() return end
+        if r.status == 3 then st.pick = false; say("Casting needs catt (yay -S catt)", 3); wake() return end
+        local def, screens, speakers = "", {}, {}
+        for line in (r.stdout or ""):gmatch("[^\n]+") do
+            local a, b, c, d = line:match("^([^\t]*)\t([^\t]*)\t?([^\t]*)\t?([^\t]*)$")
+            if a == "default" then def = (b or ""):gsub("^%s+", ""):gsub("%s+$", "")
+            elseif a and a ~= "" then
+                local tv = { host = a, name = (b ~= "" and b or a) }
+                local m = (d or ""):lower()
+                local spk = false
+                for _, k in ipairs(SPEAKER) do if m:find(k) then spk = true end end
+                tv.kind = spk and "Speaker  ·  sound only" or (((c or "") .. " " .. (d or "")):gsub("^%s+", ""):gsub("%s+$", ""))
+                if tv.kind == "" then tv.kind = a end
+                tv.on = def ~= "" and (def == tv.host or def == tv.name)
+                if spk then speakers[#speakers + 1] = tv else screens[#screens + 1] = tv end
+            end
+        end
+        for _, tv in ipairs(speakers) do screens[#screens + 1] = tv end
+        for i = 1, math.min(#screens, 8) do cast_tvs[i] = screens[i] end
+        wake()
+    end)
+end
+local function cast_to(dev)
+    local path = mp.get_property("path")
+    if not path or path == "" or not dev then return end
+    local at = tostring(math.floor(prop("time-pos", 0) or 0))
+    st.pick = false
+    st.casting = true
+    cast_host = dev.host
+    say("Sending it to " .. dev.name .. "…", 12)
+    mp.command_native_async({ name = "subprocess", args = { "catt", "-d", dev.host, "set_default" }, playback_only = false }, function() end)
+    mp.command_native_async({ name = "subprocess", args = { "sh", "-c", CAST, "sh", path, at, dev.host }, capture_stdout = true, playback_only = false }, function(ok, r)
+        if ok and r and r.status == 0 then
+            remote_start(dev, tonumber(at) or 0); say("Playing on " .. dev.name, 2.5)
+        else
+            st.casting = false
+            local why = r and (r.stdout or ""):gsub("^%s+", ""):gsub("%s+$", ""):gsub("^Error:%s*", "")
+            say("Could not cast: " .. ((why and why ~= "") and why or (dev.name .. " did not answer")), 4)
+        end
+        wake()
+    end)
+    wake()
+end
+local function cast()
+    if st.casting then return end
+    if st.pick then st.pick = false; wake() return end
+    local path = mp.get_property("path")
+    if not path or path == "" then return end
+    if not has_catt() then say("Casting needs catt (yay -S catt)", 3); wake(); return end
+    st.pick = true
+    scan()
+    wake()
+end
+local function cast_stop()
+    if not has_catt() then say("Casting needs catt (yay -S catt)", 3); wake(); return end
+    local args = cast_host and { "catt", "-d", cast_host, "stop" } or { "catt", "stop" }
+    mp.command_native_async({ name = "subprocess", args = args, playback_only = false }, function() end)
+    remote_stop("Stopped the TV")
+end
 local function press(id)
-    if id == "play" then
+    if id == "play" and tv.on then tv_toggle()
+    elseif id == "mute" and tv.on then tv_mute()
+    elseif id == "play" then
         if prop("eof-reached", false) then mp.commandv("seek", "0", "absolute"); mp.set_property_bool("pause", false)
         else mp.command("cycle pause") end
     elseif id == "prev" then mp.command("playlist-prev")
@@ -807,6 +1061,8 @@ local function press(id)
     elseif id == "speed" then if prop("speed", 1) >= SPEEDS[#SPEEDS] then mp.set_property_number("speed", 1); say("Speed 1×") else cycle_speed(true) end
     elseif id == "subs" then cycle_track("sub", "Subtitles")
     elseif id == "mute" then mp.command("cycle mute")
+    elseif id == "cast" then if st.casting then cast_stop() else cast() end
+    elseif id:match("^tv%d+$") then cast_to(cast_tvs[tonumber(id:sub(3))])
     elseif id == "peek_files" and st.err_path then
         local files = (opts.shell ~= "" and (opts.shell .. "/bin/vitreus-files")) or "vitreus-files"
         mp.command_native_async({ name = "subprocess", args = { "setsid", files, st.err_path }, detach = true, playback_only = false }, function() end)
@@ -817,6 +1073,9 @@ end
 mp.add_forced_key_binding("MBTN_LEFT", "vp-click", function(e)
     local id = under(st.mx, st.my)
     if st.shown < 0.5 then id = nil end
+    if e.event == "down" and st.pick and not (id and (id == "pick" or id == "cast" or id:match("^tv%d+$"))) then
+        st.pick = false; wake(); return
+    end
     if e.event == "down" then
         if id == "seek" then st.drag = "seek"; seek_to(st.mx, false)
         elseif id == "vol" then st.drag = "vol"; vol_to(st.mx)
@@ -846,11 +1105,18 @@ mp.add_key_binding(nil, "slower", function() cycle_speed(false); wake() end)
 mp.add_key_binding(nil, "loop", function() toggle_loop(); wake() end)
 mp.add_key_binding(nil, "info", function() st.info = not st.info; wake() end)
 mp.add_key_binding(nil, "escape", function()
-    if prop("fullscreen", false) then mp.set_property_bool("fullscreen", false)
+    if st.pick then st.pick = false; wake()
+    elseif prop("fullscreen", false) then mp.set_property_bool("fullscreen", false)
     elseif st.info then st.info = false; wake()
     else mp.command("quit") end
 end)
 local function wheel(dir)
+    if tv.on then
+        if st.shown > 0.5 and (under(st.mx, st.my) == "vol" or under(st.mx, st.my) == "mute") then tv_vol((tv.vol or 50) + 5 * dir)
+        else tv_seek(tv_now() + 5 * dir) end
+        st.moved = now(); wake()
+        return
+    end
     if st.shown > 0.5 and (under(st.mx, st.my) == "vol" or under(st.mx, st.my) == "mute") then
         mp.commandv("add", "volume", tostring(5 * dir))
         say(string.format("Sound %d %%", math.floor(prop("volume", 100) + 0.5)), 0.8)
@@ -860,6 +1126,8 @@ local function wheel(dir)
     st.moved = now()
     wake()
 end
+mp.add_key_binding(nil, "cast", cast)
+mp.add_key_binding(nil, "cast_stop", cast_stop)
 mp.add_key_binding(nil, "wheel_up", function() wheel(1) end)
 mp.add_key_binding(nil, "wheel_down", function() wheel(-1) end)
 
@@ -875,7 +1143,7 @@ mp.observe_property("display-hidpi-scale", "native", size)
 for _, p in ipairs({ "pause", "eof-reached", "fullscreen", "volume", "mute", "speed", "loop-file", "playlist-pos", "track-list", "duration" }) do
     mp.observe_property(p, "native", function() wake() end)
 end
-mp.register_event("start-file", function() st.err = nil; st.err_path = mp.get_property("path"); st.moved = now(); wake() end)
+mp.register_event("start-file", function() st.err = nil; st.err_path = mp.get_property("path"); if st.err_path and st.err_path:find("^%a[%w+.-]*://") then st.err_path = nil end; st.moved = now(); wake() end)
 mp.register_event("end-file", function(e)
     if e.reason == "error" then
         st.err = e.file_error or "mpv could not read it"

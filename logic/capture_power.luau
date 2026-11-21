@@ -2,7 +2,6 @@
 -- Controls drawer's third row, and their windows. Nothing here is drawn by this file: it starts the programs, and reports
 -- the state of the recording and of the profile as facts.
 return function(set_panel)
-    local function lua_quote(s) return (string.format("%q", s):gsub("\\\n", "\\n")) end
     local function spawn(cmd)                      -- start it on the desktop, detached from this shell
         exec_on_desktop(cmd)
     end
@@ -107,8 +106,6 @@ return function(set_panel)
     -- ── The session ──────────────────────────────────────────────────────────────────────────────────────────────
     -- 0 lock, 1 sleep, 2 log out, 3 restart, 4 power off. The scene only says so (`pow_press`) after the button has
     -- been held for one second, so nothing here has to ask again.
-    local user = nil
-    run("printenv", { "USER" }, function(out) user = (out or ""):gsub("%s+$", "") end)
     -- A session action that fails says so, with the program's own last line (polkit "Access denied", an inhibitor, no lock
     -- screen running...): before, a refused `systemctl poweroff` did nothing at all and looked like a broken button (issue #57).
     local function failed(what)
@@ -131,10 +128,17 @@ return function(set_panel)
             run("printenv", { "HYPRLAND_INSTANCE_SIGNATURE" }, function(out, code)
                 if code == 0 and (out or "") ~= "" then run("hyprctl", { "dispatch", "hl.dsp.exit()" }, function() end)
                 else
-                    -- niri leaves by its own action (the button was held for a second: no need for its "are you sure" box); pleamar-wm by being ended
+                    -- niri leaves by its own action (the button was held for a second: no need for its "are you sure" box); pleamar-wm by being ended.
+                    -- pleamar-wm once stopped half-way out (2026-11-15: its programs gone, the screen frozen on the last frame, a reboot from a TTY);
+                    -- a second TERM while it is leaving ends it at once, so one is sent 5 s later if it is still there. From its own session
+                    -- (`setsid -f`): pleamar-wm ends this bar on its way out, and with it whatever the bar is still running.
                     run("printenv", { "NIRI_SOCKET" }, function(o, c)
                         if c == 0 and (o or "") ~= "" then run("niri", { "msg", "action", "quit", "--skip-confirmation" }, function() end)
-                        else run("pkill", { "-TERM", "-x", "pleamar-wm" }, function() end) end
+                        else
+                            run("setsid", { "-f", "sh", "-c",
+                                'p=$(pgrep -x pleamar-wm); [ -n "$p" ] || exit 0; kill -TERM $p; sleep 5; '
+                                .. 'for i in $p; do kill -0 $i 2> /dev/null && kill -TERM $i; done' }, function() end)
+                        end
                     end)
                 end
             end)

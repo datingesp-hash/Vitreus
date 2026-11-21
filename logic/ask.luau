@@ -11,7 +11,8 @@ return function()
     local OLLAMA = "http://localhost:11434"
 
     local have = { false, false, false, false }
-    local state = { backend = 1, model = "", history = {} }   -- backend: 1 claude, 2 ollama, 3 codex, 4 gemini
+    local state = { backend = 1, model = "", chats = { {}, {}, {}, {} } }   -- backend: 1 claude, 2 ollama, 3 codex, 4 gemini
+    state.history = state.chats[1]                      -- each assistant keeps a conversation of its own; this is the one on show
     local attach, attach_label = nil, ""                -- text waiting to go with the next question (the clipboard, a card from the Shelf): { text } and what to call it
     local usage = nil                                 -- Claude's plan usage, as the last answer reported it: { u5, r5, u7, r7 } (fractions, and when each window resets)
     local models = {}
@@ -20,11 +21,22 @@ return function()
     local proc = nil                                  -- the running answer, if any
 
     local function save()
-        local h = {}
-        for _, m in ipairs(state.history) do
-            if m.role ~= "note" then h[#h + 1] = { role = m.role, text = m.text, who = m.who, attach = m.attach, alabel = m.alabel } end
+        local chats = {}
+        for b = 1, 4 do
+            local h = {}
+            for _, m in ipairs(state.chats[b]) do
+                if m.role ~= "note" then h[#h + 1] = { role = m.role, text = m.text, who = m.who, attach = m.attach, alabel = m.alabel } end
+            end
+            chats[b] = { messages = h }
         end
-        pcall(sys.call, "files.write", "desk-ask.json", { backend = state.backend, model = state.model, history = h, usage = usage })
+        pcall(sys.call, "files.write", "desk-ask.json", { backend = state.backend, model = state.model, chats = chats, usage = usage })
+    end
+
+    -- Show the conversation of assistant b (1 to 4). An answer still arriving keeps going into the conversation it was asked in.
+    local function show_chat(b)
+        state.history = state.chats[b]
+        fact.ask_busy = proc ~= nil and proc.chat == state.history
+        fact.ask_follow = true
     end
 
     local function status()
@@ -110,7 +122,7 @@ return function()
         if proc ~= mine then return end
         proc = nil
         fact.ask_busy = false
-        local last = state.history[#state.history]
+        local last = mine.chat[#mine.chat]
         if last and last.role == "assistant" and last.text == "" then last.text = "(no answer)" end
         save()
         render()
@@ -118,7 +130,7 @@ return function()
 
     local function append(mine, s)
         if proc ~= mine or type(s) ~= "string" or s == "" then return end
-        local last = state.history[#state.history]
+        local last = mine.chat[#mine.chat]
         if last and last.role == "assistant" then
             last.text = last.text .. s
             render_soon()
@@ -127,7 +139,7 @@ return function()
 
     local function fail(mine, msg)
         if proc ~= mine then return end
-        local last = state.history[#state.history]
+        local last = mine.chat[#mine.chat]
         if last and last.role == "assistant" then
             last.text = (last.text ~= "" and (last.text .. "\n\n") or "") .. "[" .. msg .. "]"
             render()
@@ -179,6 +191,8 @@ return function()
         local off = os.time(os.date("*t", now)) - now
         local e = os.time(at)
         if e and e < now - 2 * 86400 then at.year = at.year + 1; e = os.time(at) end
+        -- (a time with no date is the next one: "1:10am" read at 11pm was put on today, already past, and the window showed as reset)
+        if e and not mon and e - off <= now then e = e + 86400 end
         return e and (e - off)
     end
     local polled = 0
@@ -255,8 +269,9 @@ return function()
     end
 
     local function run_plain(mine, msgs, name)
-        local p = prompt_for(msgs)
-        local args = name == "codex" and { "exec", p } or { "-p", p }
+        -- (the prompt on its input, as the others get it: in the arguments anyone on the machine could read it, attachments included, and a
+        -- long one did not fit. `codex exec -` reads it from there; gemini answers what is piped to it and ends.)
+        local args = name == "codex" and { "exec", "-" } or {}
         local first = true
         return spawn(name, args, function(line)
             append(mine, (first and "" or "\n") .. line)
@@ -264,14 +279,27 @@ return function()
         end, function(_, code)
             if code ~= 0 then fail(mine, name .. " exited with " .. tostring(code)) end
             finish(mine)
-        end)
+        end, { input = prompt_for(msgs) })
     end
 
     local function ask(v)
         if type(v) ~= "string" then return end
         v = v:gsub("^%s+", ""):gsub("%s+$", "")
         if v == "" and attach then v = "Explain this." end
-        if v == "" or proc then return end
+        if v == "" then return end
+        if proc then
+            -- One answer at a time: another assistant is still answering in its own tab.
+            if proc.chat ~= state.history then
+                for b = 1, 4 do
+                    if state.chats[b] == proc.chat then
+                        table.insert(state.history, { role = "note", text = LABELS[b] .. " is still answering in its tab. Ask again when it is done, or stop it there.", who = "Note" })
+                    end
+                end
+                render()
+            end
+            text.ask_in = v                 -- (also when it is this chat that is answering: the field was emptied on Enter, and the question was lost)
+            return
+        end
         for i = #state.history, 1, -1 do
             if state.history[i].role == "note" then table.remove(state.history, i) end
         end
@@ -299,12 +327,15 @@ return function()
         render()
         local msgs = {}
         for i = 1, #state.history - 1 do msgs[i] = state.history[i] end
-        local mine = {}
+        local mine = { chat = state.history }
         proc = mine
-        local id
-        if state.backend == 1 then id = run_claude(mine, msgs)
-        elseif state.backend == 2 then id = run_ollama(mine, msgs)
-        else id = run_plain(mine, msgs, NAMES[state.backend]) end
+        -- (a program that cannot be started throws: it was left "answering" for good, and nothing else could be asked)
+        local ok, id = pcall(function()
+            if state.backend == 1 then return run_claude(mine, msgs)
+            elseif state.backend == 2 then return run_ollama(mine, msgs)
+            else return run_plain(mine, msgs, NAMES[state.backend]) end
+        end)
+        if not ok then fail(mine, "it could not be started"); finish(mine); return end
         mine.id = id
     end
 
@@ -322,6 +353,8 @@ return function()
         if i < 1 or i > 4 or not have[i] then return end
         state.backend = i
         fact.ask_backend = i - 1
+        show_chat(i)
+        render()
         status()
         save()
     end
@@ -357,8 +390,14 @@ return function()
             local m = state.history[r.mi]
             str = m and m.text
         end
-        if type(str) == "string" and str ~= "" then run("wl-copy", { "--", str }, function() end) end
+        if type(str) == "string" and str ~= "" then run("wl-copy", {}, function() end, { input = str, output = false }) end
     end)
+    -- The first `n` bytes of a text, less whatever would end in the middle of a letter (a plain `sub` left half an accented one, which shows as a box).
+    local function cut(str, n)
+        if #str <= n then return str end
+        while n > 0 and (str:byte(n + 1) or 0) >= 0x80 and (str:byte(n + 1) or 0) < 0xC0 do n = n - 1 end
+        return str:sub(1, n)
+    end
     -- An answer kept as a note on the Desk (logic/notes.luau's `desk_note_add`): titled with the question it answered, its lines the answer's.
     on("ask_note", function(i)
         local r = model.ask_rows[(tonumber(i) or -1) + 1]
@@ -370,7 +409,7 @@ return function()
             local p = state.history[k]
             if p and p.role == "user" then q = p.text or ""; break end
         end
-        local title = (q:match("[^\n]+") or "From Ask"):sub(1, 40)
+        local title = cut(q:match("[^\n]+") or "From Ask", 40)
         local lines = {}
         for line in (m.text .. "\n"):gmatch("([^\n]*)\n") do
             if line:match("%S") and #lines < 9 then lines[#lines + 1] = line end
@@ -405,8 +444,9 @@ return function()
     on("ask_pick", pick)
     on("ask_stop", stop)
     on("ask_new", function()
-        stop()
-        state.history = {}
+        if proc and proc.chat == state.history then stop() end
+        state.chats[state.backend] = {}
+        show_chat(state.backend)
         save()
         render()
     end)
@@ -429,18 +469,28 @@ return function()
             if type(saved.backend) == "number" and saved.backend >= 1 and saved.backend <= 4 then state.backend = math.floor(saved.backend) end
             if type(saved.model) == "string" then state.model = saved.model end
             if type(saved.usage) == "table" then usage = { u5 = tonumber(saved.usage.u5), r5 = tonumber(saved.usage.r5), u7 = tonumber(saved.usage.u7), r7 = tonumber(saved.usage.r7) } end
-            if type(saved.history) == "table" then
-                for _, m in ipairs(saved.history) do
+            local function load(into, list)
+                if type(list) ~= "table" then return end
+                for _, m in ipairs(list) do
                     if type(m) == "table" and type(m.text) == "string" and (m.role == "user" or m.role == "assistant") then
-                        state.history[#state.history + 1] = { role = m.role, text = m.text, who = type(m.who) == "string" and m.who or nil,
-                                                               attach = type(m.attach) == "string" and m.attach or nil, alabel = type(m.alabel) == "string" and m.alabel or nil }
+                        into[#into + 1] = { role = m.role, text = m.text, who = type(m.who) == "string" and m.who or nil,
+                                            attach = type(m.attach) == "string" and m.attach or nil, alabel = type(m.alabel) == "string" and m.alabel or nil }
                     end
                 end
-                trim()
+                while #into > KEEP do table.remove(into, 1) end
+            end
+            if type(saved.chats) == "table" then
+                for b = 1, 4 do
+                    local c = saved.chats[b]
+                    if type(c) == "table" then load(state.chats[b], c.messages) end
+                end
+            else
+                load(state.chats[state.backend], saved.history)  -- from before each assistant had its own: it was the chosen one's
             end
         end
     end
     fact.ask_backend = state.backend - 1
+    show_chat(state.backend)
     render()
     status()
     show_usage()
@@ -455,6 +505,8 @@ return function()
                 if not have[state.backend] then
                     for j = 1, 4 do if have[j] then state.backend = j; break end end
                     fact.ask_backend = state.backend - 1
+                    show_chat(state.backend)
+                    render()
                 end
                 status()
                 if have[2] then load_models() end

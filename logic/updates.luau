@@ -310,7 +310,9 @@ git reset --hard --quiet @{u} || exit 1
 [ -n "$3" ] && mv "$g/keep-lock" lockscreen/lockscreen.plm
 exit 0]]
                             run("setsid", { "-w", "sh", "-c", keep, "sh", A.dir, (bar_changed and plausible(bar_mine)) and bar_mine or "", (lock_changed and plausible(lock_mine)) and lock_mine or "" }, function(_, rcode)
-                                local code = fcode ~= 0 and fcode or rcode
+                                -- (the reset's own code: with the fetch failed, the reset to what an earlier Check fetched has still happened,
+                                -- and stopping here left the new files running without the refresh and the restart they need)
+                                local code = rcode
                                 do
                                     pcall(sys.call, "files.write", "update-pending.json", { pending = false })
                                     if code ~= 0 then
@@ -319,7 +321,9 @@ exit 0]]
                                     -- What this version needs besides the pull (new helpers, autostart lines, binds) is what install.sh
                                     -- does without questions or sudo (--refresh); it also says which packages are missing, and the shell
                                     -- tells you once it is back, since only you can install those.
-                                    busy(true, "Updating…")
+                                    -- (ten minutes: the refresh fetches the add-ons' releases too, and after the default 45 s the page let go and
+                                    -- Update could be pressed a second time beside the first)
+                                    busy(true, "Updating…", 600000)
                                     run("setsid", { "-w", "sh", A.dir .. "/install.sh", "--refresh" }, function(out)
                                         local missing = (out or ""):match("vitreus%-missing:([^\n]*)")
                                         if missing and missing:match("^[%w%-%._+ ]+$") then

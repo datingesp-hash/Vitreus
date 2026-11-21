@@ -97,6 +97,21 @@ function hypr_monitors(max_age, cb)
         for _, f in ipairs(w) do f(out, code) end
     end)
 end
+-- The monitors' names by id (`[0] = "DP-1"`) from what `hyprctl monitors` answered: Hyprland's JSON, or pleamar-wm's (a newer one answers
+-- JSON to `-j`, an older one its own text, "Monitor <name> (ID 1):"). The parts that only read the text left the bar no room under a newer one.
+function mon_names(out)
+    local names = {}
+    if not out then return names end
+    local ok, list = pcall(json.decode, out)
+    if ok and type(list) == "table" then
+        for _, m in ipairs(list) do
+            if m.name and tonumber(m.id) then names[tonumber(m.id)] = tostring(m.name) end
+        end
+    else
+        for name, id in out:gmatch("Monitor (%S+) %(ID (%d+)%)") do names[tonumber(id)] = name end
+    end
+    return names
+end
 function exec_on_desktop(cmd)
     local line = 'export PATH="$HOME/.local/bin:$PATH"; ' .. cmd
     if on_hyprland then
@@ -134,26 +149,29 @@ function wm_workspaces()
     -- The workspace shown is per monitor: the bar's own, which is the one named in its `screens:` (the order of pleamar-wm's monitors is
     -- the order `hyprctl monitors` gives them: "Monitor <name> (ID 1)"), or the one the pointer is on when the bar is on all of them.
     local cmds = { "get mon", "get win.shown.0", "get win.shown.1", "get win.shown.2", "get win.shown.3" }
-    for i = 0, 5 do cmds[#cmds + 1] = "get win." .. i .. ".open" end
-    for i = 0, 5 do cmds[#cmds + 1] = "get win." .. i .. ".workspace" end
-    -- (18 to 21) a right press on the bare desktop, which the window manager's scene counts: the desktop menu opens where it was (see `desk_n` in wm/session.plm)
+    -- (pleamar-wm has 16 window slots, `windows win max 16`: only the first six were asked, so a workspace holding only later windows showed empty)
+    local slots = 16
+    for i = 0, slots - 1 do cmds[#cmds + 1] = "get win." .. i .. ".open" end
+    for i = 0, slots - 1 do cmds[#cmds + 1] = "get win." .. i .. ".workspace" end
+    local desk_at = 6 + 2 * slots
+    -- (the four after the windows) a right press on the bare desktop, which the window manager's scene counts: the desktop menu opens where it was (see `desk_n` in wm/session.plm)
     for _, k in ipairs({ "desk_n", "desk_x", "desk_y", "desk_mon" }) do cmds[#cmds + 1] = "get " .. k end
     hypr_monitors(30, function(mons)
         local name = bar_mon.name
         local idx = nil
         if name and name ~= "all" and mons then
-            idx = tonumber(mons:match("Monitor " .. name:gsub("%-", "%%-") .. " %\(ID (%d+)%\)"))
+            for id, n in pairs(mon_names(mons)) do if n == name then idx = id end end
         end
         say_many("wm", cmds, function(r)
             if not r then return end
             local n = idx or tonumber((r[1] or ""):match("%d+")) or 0
             local shown = tonumber((r[2 + n] or ""):match("%-?[%d.]+"))
             if shown and fact["ws.active"] ~= shown then fact["ws.active"] = shown end
-            -- Windows take slots 0 to 5 (`win.count` is only the ones on the shown workspace).
+            -- Windows take slots 0 to 15 (`win.count` is only the ones on the shown workspace).
             local busy, nwin = {}, {}
-            for i = 0, 5 do
+            for i = 0, slots - 1 do
                 if (r[6 + i] or ""):match("true") then
-                    local w = tonumber((r[12 + i] or ""):match("%-?[%d.]+"))
+                    local w = tonumber((r[6 + slots + i] or ""):match("%-?[%d.]+"))
                     if w then busy[w] = true; nwin[w] = (nwin[w] or 0) + 1 end
                 end
             end
@@ -162,16 +180,19 @@ function wm_workspaces()
                 if fact["ws." .. k .. ".busy"] ~= v then fact["ws." .. k .. ".busy"] = v end
                 if fact["ws." .. k .. ".n"] ~= (nwin[k] or 0) then fact["ws." .. k .. ".n"] = nwin[k] or 0 end
             end
-            local dn = tonumber((r[18] or ""):match("%-?[%d.]+"))
+            -- (the scene's `ws_empty` was only ever set on Hyprland and niri: here it stayed as it started)
+            local empty = not (shown and busy[shown])
+            if fact.ws_empty ~= empty then fact.ws_empty = empty end
+            local dn = tonumber((r[desk_at] or ""):match("%-?[%d.]+"))
             if dn then
                 -- (the window manager's facts start from 0 again when its scene is read in again: that is not a press)
                 if desk_seen ~= nil and dn > 0 and dn ~= desk_seen then
-                    local x, y, m = tonumber((r[19] or ""):match("%-?[%d.]+")) or 0, tonumber((r[20] or ""):match("%-?[%d.]+")) or 0, tonumber((r[21] or ""):match("%-?[%d.]+")) or 0
+                    local x, y, m = tonumber((r[desk_at + 1] or ""):match("%-?[%d.]+")) or 0, tonumber((r[desk_at + 2] or ""):match("%-?[%d.]+")) or 0, tonumber((r[desk_at + 3] or ""):match("%-?[%d.]+")) or 0
                     -- (the desktop editor, desktopedit/, is what a right press opens; it is started if it is not running)
                     local function say_editor(cb) run("pleamar", { "--say", "desktopedit", "fact emon " .. math.floor(m), "fact open true" }, cb) end
                     say_editor(function(_, code)
                         if code ~= 0 then
-                            exec_on_desktop('vitreus-keep "$HOME/.config/pleamar/shells/vitreus/desktopedit/desktopedit.plm"')
+                            exec_on_desktop('vitreus-keep "${XDG_CONFIG_HOME:-$HOME/.config}/pleamar/shells/vitreus/desktopedit/desktopedit.plm"')
                             scene_say_when_up("desktopedit", { "fact emon " .. math.floor(m), "fact open true" })
                         end
                     end)
@@ -208,7 +229,12 @@ function niri_workspaces()
 end
 after(1500, function()
     if on_niri then every(1000, niri_workspaces)
-    elseif not on_hyprland then every(500, wm_workspaces) end
+    elseif not on_hyprland then
+        -- (not Hyprland and not niri was taken to be pleamar-wm: on any other compositor this was a `socat` to a missing socket twice a second, for ever)
+        with_sock_dir(function(dir)
+            run("ls", { dir .. "/wm.sock" }, function(_, code) if code == 0 then every(500, wm_workspaces) end end)
+        end)
+    end
 end)
 function goto_workspace(i)
     if on_hyprland then sys.call("workspaces.focus", i)
@@ -403,7 +429,7 @@ local function show_art(path)
         fact.art_on = false
         return
     end
-    local sq = "/tmp/vitreus-art-" .. hash(path) .. "-sq.png"
+    local sq = rt_dir .. "/vitreus-art-" .. hash(path) .. "-sq.png"   -- (the user's own runtime folder, not /tmp: a name anyone can work out, in a folder anyone can write to)
     run("magick", { path .. "[0]", "-gravity", "center", "-crop", "1:1", "+repage", "-resize", "256x256", sq }, function(_, code)
         if mine ~= art_seq then return end
         text.arturl = code == 0 and sq or path
@@ -415,7 +441,7 @@ end
 -- never the one on show. (No new local: this file is at Luau's limit of 200.)
 every(30 * 60 * 1000, function()
     local cur = (text.arturl or ""):match("([^/]+)$") or "-"
-    run("find", { "/tmp", "-maxdepth", "1", "-name", "vitreus-art-*", "-mmin", "+120", "-not", "-name", cur, "-delete" }, function() end)
+    run("find", { rt_dir, "-maxdepth", "1", "-name", "vitreus-art-*", "-mmin", "+120", "-not", "-name", cur, "-delete" }, function() end)
 end)
 local function use_art(url)
     if url == art_url then return end
@@ -425,9 +451,11 @@ local function use_art(url)
         show_art(unpercent(url:sub(8)))
     elseif url:match("^https?://") then
         -- (the URL is whatever a player says: at most 16 MB of it lands in /tmp, which is memory, and a redirect stays on http(s))
-        local path = "/tmp/vitreus-art-" .. hash(url) .. ".img"
+        local path = rt_dir .. "/vitreus-art-" .. hash(url) .. ".img"
         run("curl", { "-fsSL", "--max-time", "8", "--max-filesize", "16M", "--proto-redir", "=http,https", "-o", path, url }, function(_, code)
-            if code == 0 and art_url == url then show_art(path) end
+            if art_url ~= url then return end
+            -- A cover that could not be fetched: no cover, rather than the last song's for the whole of this one (and the next report may try again).
+            if code == 0 then show_art(path) else art_url = ""; show_art("") end
         end)
     else
         show_art("")
@@ -583,7 +611,7 @@ local function coalesced(service)
         if pending ~= nil then
             local v = pending
             pending = nil
-            sys.call(service, v)
+            pcall(sys.call, service, v)   -- (a service that refuses, with no sound server or no brightnessctl, must not leave `busy` set: the slider was dead from then on)
             after(40, pump)
         else
             busy = false
@@ -606,12 +634,13 @@ sys.watch("network", function(n)
     fact.on_wifi = n.kind == "wifi" and n.online == true
 end)
 
+-- (Either can refuse: "BlueZ is not running" on a machine whose Bluetooth service is stopped.)
 on("togglewifi", function(v)
-    sys.call("network.wifi", v == 1)
+    pcall(sys.call, "network.wifi", v == 1)
 end)
 
 on("togglebt", function(v)
-    sys.call("bluetooth.power", v == 1)
+    pcall(sys.call, "bluetooth.power", v == 1)
 end)
 
 -- Do Not Disturb, with a timer, and the notification history: one module. `dnd` is whether it is in effect,
@@ -648,7 +677,8 @@ function DQ.active()
     return (q or f) and not DQ.skip
 end
 local function dnd_save()
-    pcall(sys.call, "files.write", "dnd.json", { manual = dnd_manual, ends = dnd_until, len = dnd_len,
+    -- (what Game mode set is not kept as "manual": a restart while it was on left Do Not Disturb on for good)
+    pcall(sys.call, "files.write", "dnd.json", { manual = dnd_manual and not game_fx.dnd_held, ends = dnd_until, len = dnd_len,
         quiet = { on = DQ.on, from = DQ.from, to = DQ.to, fullscreen = DQ.fullscreen } })
 end
 local function nt_save()
@@ -665,6 +695,13 @@ local function nt_when(t)
     return os.date("%b ", t) .. d.day
 end
 
+-- A notification's whole message, for a row opened to read it: line breaks kept, blank runs squeezed to one.
+local function nt_full(body)
+    local full = ((body or ""):gsub("\r", ""):gsub("[ \t]+\n", "\n"):gsub("\n\n\n+", "\n\n"):gsub("^%s+", ""):gsub("%s+$", ""))
+    if #full > 3000 then full = full:sub(1, 3000) .. "…" end
+    return full
+end
+
 local function nt_render()
     local rows = {}
     for i, h in ipairs(nt_hist) do
@@ -672,6 +709,7 @@ local function nt_render()
         -- one line each: a body with line breaks (a list) would otherwise spill over the row under it
         local title = ((h.title or ""):gsub("%s+", " "))
         local body = ((h.body or ""):gsub("%s+", " "))
+        -- the whole of it, for a row opened to read it: line breaks kept, blank runs squeezed to one
         rows[i] = { title = title, sub = body ~= "" and (h.app .. "  ·  " .. body) or h.app, when = nt_when(h.t) }
     end
     model.nt_hist = rows
@@ -725,8 +763,10 @@ local function dnd_refresh()
     end
 end
 
+-- (the notification service hands the title and the body as plain text already, markup removed and entities read once: doing it again here
+-- ate "<no subject>" out of a title that had been `&lt;no subject&gt;`, and read `&amp;lt;` as `<`)
 local function nt_strip(s)
-    return ((s or ""):gsub("<[^>]*>", ""):gsub("&amp;", "&"):gsub("&lt;", "<"):gsub("&gt;", ">"):gsub("&quot;", '"'))
+    return s or ""
 end
 local function nt_add(n)
     table.insert(nt_hist, 1, {
@@ -764,6 +804,7 @@ dnd_refresh()
 
 -- The tile's pill: off if anything is silencing, else on until turned off.
 on("togglednd", function()
+    game_fx.dnd_held = nil                                -- (set by hand from here on: no longer Game mode's to lift or to leave unsaved)
     if dnd then
         dnd_manual, dnd_until, dnd_len = false, 0, 0
         if DQ.active() then DQ.skip = true end            -- only quiet hours or a fullscreen window were holding: let notifications through until they would end
@@ -779,12 +820,14 @@ end)
 game_fx.dnd_start = function()
     if dnd then return false end
     dnd_manual = true
+    game_fx.dnd_held = true
     dnd_save()
     dnd_refresh()
     return true
 end
 game_fx.dnd_stop = function()
-    if not dnd_manual then return end                    -- turned off by hand in the meantime: nothing to undo
+    if not dnd_manual or not game_fx.dnd_held then game_fx.dnd_held = nil; return end      -- turned off (or on again) by hand in the meantime: nothing to undo
+    game_fx.dnd_held = nil
     dnd_manual, dnd_until, dnd_len = false, 0, 0
     dnd_save()
     dnd_refresh()
@@ -810,13 +853,18 @@ end
 game_fx.wm = function(on)
     local NAMES = { "rad", "shd", "wo_a", "wo_i" }
     if on then
-        if game_fx.wm_prior then return end
+        game_fx.wm_want = true
+        if game_fx.wm_prior or game_fx.wm_asking then return end
+        game_fx.wm_asking = true
         local prior, n = {}, 0
         for _, k in ipairs(NAMES) do
             wm_get(k, function(v)
                 prior[k] = v
                 n = n + 1
                 if n == #NAMES then
+                    game_fx.wm_asking = nil
+                    -- (switched off before the four answers landed: the windows went square after it, and nothing put them back)
+                    if not game_fx.wm_want then return end
                     game_fx.wm_prior = prior
                     wm_say("fact rad 0")
                     wm_say("fact shd 0")
@@ -826,6 +874,7 @@ game_fx.wm = function(on)
             end)
         end
     else
+        game_fx.wm_want = false
         local p = game_fx.wm_prior
         if not p then return end
         game_fx.wm_prior = nil
@@ -839,17 +888,22 @@ local function dq_sync()
     fact.nt_fs = DQ.fullscreen
     text.nt_qfrom_t = DQ.clock(DQ.from)
     text.nt_qto_t = DQ.clock(DQ.to)
+    fact.nt_qfrom = DQ.from
+    fact.nt_qto = DQ.to
 end
 on("nt_q_toggle", function() DQ.on = not DQ.on; DQ.skip = false; dnd_save(); dq_sync(); dnd_refresh() end)
 on("nt_fs_toggle", function() DQ.fullscreen = not DQ.fullscreen; DQ.fs = false; DQ.skip = false; dnd_save(); dq_sync(); dnd_refresh(); DQ.check() end)
-on("nt_q_step", function(k)        -- 0 start earlier, 1 start later, 2 end earlier, 3 end later: half an hour at a time
-    k = math.floor((tonumber(k) or 0) + 0.5)
-    if k == 0 then DQ.from = (DQ.from - 30) % 1440
-    elseif k == 1 then DQ.from = (DQ.from + 30) % 1440
-    elseif k == 2 then DQ.to = (DQ.to - 30) % 1440
-    elseif k == 3 then DQ.to = (DQ.to + 30) % 1440 end
+dq_fx = { save_n = 0 }              -- (a global: vitreus.luau is at Luau's 200 locals)
+on("nt_q_set", function(v)        -- a handle of the 24-hour track: which * 10000 + minutes (which: 1 the start, 2 the end), in half hours
+    v = math.floor((tonumber(v) or 0) + 0.5)
+    local k = v // 10000
+    local m = (math.floor((v % 10000) / 30 + 0.5) * 30) % 1440
+    if k == 1 then DQ.from = m elseif k == 2 then DQ.to = m else return end
     DQ.skip = false
-    dnd_save(); dq_sync(); dnd_refresh()
+    dq_sync()
+    dq_fx.save_n = dq_fx.save_n + 1        -- it comes many times a drag: saved once it rests
+    local n = dq_fx.save_n
+    after(400, function() if n == dq_fx.save_n then dnd_save(); dnd_refresh() end end)
 end)
 dq_sync()
 every(20000, dnd_refresh)                                   -- quiet hours begin and end by the clock
@@ -858,6 +912,11 @@ every(20000, dnd_refresh)                                   -- quiet hours begin
 -- and every half minute in case an event was missed. (It used to be asked every 2.5 s, and still is without Hyprland.)
 function DQ.check()
     if not DQ.fullscreen then return end
+    -- Off Hyprland, the `window` service says it (and says when it changes). niri's `hyprctl` stand-in always answered 0, so the switch did nothing there.
+    if not on_hyprland then
+        if DQ.wfs ~= DQ.fs then DQ.fs = DQ.wfs; dnd_refresh() end
+        return
+    end
     run("hyprctl", { "activewindow", "-j" }, function(out)
         local ok, j = pcall(json.decode, out or "")
         local fs = ok and type(j) == "table" and (tonumber(j.fullscreen) or 0) >= 2
@@ -869,11 +928,15 @@ function DQ.poke()
     DQ.poking = true
     after(120, function() DQ.poking = false; DQ.check() end)      -- a burst of events (a workspace switch says several) is asked once
 end
--- (Without Hyprland there are no such events, pleamar-wm's `hyprctl activewindow` is asked every 2.5 s, as before.)
+DQ.wfs = false
+pcall(sys.watch, "window", function(w)
+    DQ.wfs = type(w) == "table" and w.fullscreen == true
+    if not on_hyprland then DQ.check() end
+end)
 DQ.ticks = 0
 every(2500, function()
     DQ.ticks = DQ.ticks + 1
-    if not on_hyprland or DQ.ticks % 12 == 0 then DQ.check() end
+    if on_hyprland and DQ.ticks % 12 == 0 then DQ.check() end
 end)
 -- A timer chip; pressing the one that is lit again cancels it.
 on("dnd_for", function(m)
@@ -882,6 +945,7 @@ on("dnd_for", function(m)
     else
         dnd_until, dnd_len, dnd_manual = os.time() + m * 60, m, false
     end
+    game_fx.dnd_held = nil
     dnd_save()
     dnd_refresh()
 end)
@@ -1022,6 +1086,22 @@ on("nt_clear", function()
     nt_render()
     dnd_refresh()
 end)
+-- The dashboard's notification opened to read it all: its whole title, app and message.
+-- The Notifications page's row opened to read it all.
+on("fact:nt_px", function(i)
+    local h = i and i >= 0 and nt_hist[i + 1]
+    if not h then return end
+    text.nt_popen_title = ((h.title or ""):gsub("%s+", " "))
+    text.nt_popen_app = h.app or ""
+    text.nt_popen_body = nt_full(h.body)
+end)
+on("fact:nt_dx", function(i)
+    local h = i and i >= 0 and nt_hist[i + 1]
+    if not h then return end            -- closed: the texts stay while it fades
+    text.nt_open_title = ((h.title or ""):gsub("%s+", " "))
+    text.nt_open_app = h.app or ""
+    text.nt_open_body = nt_full(h.body)
+end)
 on("nt_hist_del", function(i)
     table.remove(nt_hist, i + 1)
     nt_save()
@@ -1105,7 +1185,15 @@ local function caf_set(awake)
     else
         run("pkill", { "-x", "vitreus-inhibit" }, function()
             -- systemctl returns before the daemon is there to be found: a moment's wait before reading.
-            run("systemctl", { "--user", "start", "hypridle.service" }, function() after(400, done) end)
+            -- The installer starts hypridle from pleamar's autostart, not as a unit, and the unit does nothing in a session whose systemd has no
+            -- WAYLAND_DISPLAY: if it is still not there, it is started as the autostart does. (Without this the machine never locked or slept again.)
+            run("systemctl", { "--user", "start", "hypridle.service" }, function()
+                after(400, function()
+                    run("pgrep", { "-x", "hypridle" }, function(_, found)
+                        if found ~= 0 then run("setsid", { "-f", "hypridle" }, function() after(400, done) end) else done() end
+                    end)
+                end)
+            end)
         end)
     end
 end
@@ -1536,7 +1624,7 @@ local function bt_ask(d, kind, call)
     local gen = bt_gen
     bt_pending[d.address] = { kind = kind, row = d, gen = gen }
     bt_render()
-    sys.call(call, d.address)
+    pcall(sys.call, call, d.address)   -- (it can refuse, `busy` while another device pairs: the timers below must still be set, or the row says "connecting" for good)
     after(20000, function()
         local p = bt_pending[d.address]
         if p and p.gen == gen then
@@ -1594,8 +1682,9 @@ on("bt_forget", function(i)
     local d = bt_list[i + 1]
     if not d or d.hd > 0 then return end
     bt_pending[d.address] = nil
-    sys.call("bluetooth.forget", d.address)
+    pcall(sys.call, "bluetooth.forget", d.address)
     fact.bt_open_row = -1
+    bt_open_addr = nil   -- (a fact the logic sets fires no `fact:` handler: left set, the row opened again by itself when the device was next seen)
 end)
 
 -- A scan gives the scene no sign of its own, so it is told to show one. Discovery is held open by
@@ -1604,6 +1693,7 @@ end)
 -- service picks up what it finds. It ends by itself after twelve seconds.
 function BT_SEEN.scan(secs)
     if bt_scanning then return end
+    if not (bt_last and bt_last.powered) then return end   -- nothing to scan with while Bluetooth is off
     bt_scanning = true
     fact.bt_scanning = true
     bt_render()
@@ -1819,7 +1909,7 @@ local function wf_ask(r, kind, call, ...)
     local gen = WF.gen
     WF.busy[r.ssid] = { kind = kind, gen = gen }
     wf_render(WF.rows)
-    sys.call(call, ...)
+    pcall(sys.call, call, ...)   -- (it can refuse: the timer below must still be set, or the row stays busy for good)
     after(15000, function()
         local b = WF.busy[r.ssid]
         if b and b.gen == gen then
@@ -1848,14 +1938,15 @@ end)
 on("wifi_forget", function(i)
     local r = WF.rows[math.floor(i + 0.5) + 1]
     if not r then return end
-    sys.call("network.forget", r.ssid)
+    pcall(sys.call, "network.forget", r.ssid)
     fact.wifi_open_row = -1
+    WF.open = nil        -- (a fact the logic sets fires no `fact:` handler: left set, the row opened again by itself at the next refresh)
     after(1500, wf_refresh)
 end)
 
 on("wifi_copy_ip", function()
     local ip = text.wf_ip
-    if ip and ip ~= "" then run("wl-copy", { ip }, function() end) end
+    if ip and ip ~= "" then run("wl-copy", {}, function() end, { input = ip, output = false }) end
 end)
 
 -- The list is only drawn in the Controls drawer's Wi-Fi window, so it is only read while that is open (and once as it opens): `nmcli device wifi
@@ -2004,21 +2095,52 @@ local function show_month(y, m, sel)
     paint_calendar()
 end
 
+--  Changing month is animated by the scene: it is told which way (`cal_leave`, -1 back, 1 forward) and slides the grid out, then the
+--  new month is painted and `cal_flip` slides it in from the other side. The month being gone to is kept apart (`cal_to`), so a run
+--  of presses counts from the last one, and only the last paints.
+cal_to = { y = nil, m = nil, seq = 0, wheel = 0 }
+function cal_go(y, m, sel)
+    local fy, fm = cal_to.y or cal.year, cal_to.m or cal.month
+    local dir = (y * 12 + m) - (fy * 12 + fm)
+    if dir == 0 and cal_to.y == nil then show_month(y, m, sel) return end
+    dir = dir > 0 and 1 or (dir < 0 and -1 or -(cal_to.last or 1))     -- (back where a run of presses started: it comes back the way it went)
+    cal_to.last = dir
+    cal_to.y, cal_to.m = y, m
+    cal_to.seq = cal_to.seq + 1
+    local my = cal_to.seq
+    emit("cal_leave", dir)
+    after(150, function()
+        if my ~= cal_to.seq then return end
+        cal_to.y, cal_to.m = nil, nil
+        show_month(y, m, sel)
+        emit("cal_flip", dir)
+    end)
+end
 local function open_today()
     local y, m, d = today()
+    cal_to.y, cal_to.m = nil, nil
+    cal_to.seq = cal_to.seq + 1
     show_month(y, m, key(y, m, d))
 end
 on("cal_open", open_today)
-on("cal_today", open_today)
-on("cal_prev", function()
-    local y, m = cal.year, cal.month - 1
-    if m < 1 then y, m = y - 1, 12 end
-    show_month(y, m)
+on("cal_today", function()
+    local y, m, d = today()
+    cal_go(y, m, key(y, m, d))
 end)
-on("cal_next", function()
-    local y, m = cal.year, cal.month + 1
+function cal_step(n)
+    local y, m = cal_to.y or cal.year, (cal_to.m or cal.month) + n
+    if m < 1 then y, m = y - 1, 12 end
     if m > 12 then y, m = y + 1, 1 end
-    show_month(y, m)
+    cal_go(y, m)
+end
+on("cal_prev", function() cal_step(-1) end)
+on("cal_next", function() cal_step(1) end)
+--  The wheel over the month: one month a notch, at most one every 180 ms (a touchpad sends a stream).
+on("cal_wheel", function(dy)
+    local now = os.clock()
+    if now - cal_to.wheel < 0.18 then return end
+    cal_to.wheel = now
+    cal_step((dy or 0) > 0 and -1 or 1)
 end)
 --  A day of the grid: chosen; if it belongs to the month before or after, that month comes in.
 on("cal_pick", function(k)
@@ -2035,7 +2157,7 @@ on("cal_pick", function(k)
         m = m + 1
         if m > 12 then y, m = y + 1, 1 end
     end
-    show_month(y, m, key(y, m, n))
+    if y == cal.year and m == cal.month then show_month(y, m, key(y, m, n)) else cal_go(y, m, key(y, m, n)) end
 end)
 
 --  «3:30pm Call mom», «3pm call», «15:30 dentist», «18h gym», «18.30 dinner»;
@@ -2111,7 +2233,7 @@ every(20000, function()
             if now >= at and now < at + 5 then
                 -- Do Not Disturb holds it back, but it still counts as told.
                 if not dnd then
-                    run("notify-send", { "-a", "Reminder", e.title, time12(e.time) }, function() end)
+                    run("notify-send", { "-a", "Reminder", "--", e.title, time12(e.time) }, function() end)   -- (`--`: a reminder that starts with a dash is not an option)
                 end
                 e.told = true
                 changed = true
@@ -2371,7 +2493,13 @@ function watch_urgent()
                         text.priv_scr_who = ""
                     end
                 end
-            end, function() after(3000, watch_urgent) end)
+            end, function()
+                -- (the stream ended: a screencast's stop could be in what was missed, and the light stayed on after every later share was over)
+                sc_active, sc_gen = 0, sc_gen + 1
+                fact.priv_scr = false
+                text.priv_scr_who = ""
+                after(3000, watch_urgent)
+            end)
         end)
     end)
 end
@@ -2384,7 +2512,7 @@ after(4000, function()
     local function keep(dir, file)
         run("pgrep", { "-f", dir .. "/" .. file .. ".plm" }, function(_, code)
             if code ~= 0 then
-                exec_on_desktop('vitreus-keep "$HOME/.config/pleamar/shells/vitreus/' .. dir .. '/' .. file .. '.plm"')
+                exec_on_desktop('vitreus-keep "${XDG_CONFIG_HOME:-$HOME/.config}/pleamar/shells/vitreus/' .. dir .. '/' .. file .. '.plm"')
             end
         end)
     end
@@ -2500,7 +2628,6 @@ function nt_queue.set_osd(name)
     fact.osd_on = name ~= "none"
 end
 
-local function panel_is(name) return tostring(cur_panel) == name end
 -- The scene tells the logic when `panel` changes from its side, not when the logic changes it, so
 -- every write from here also updates the local copy.
 local function set_panel(name)
@@ -2508,7 +2635,6 @@ local function set_panel(name)
     nt_queue.want = name     -- what was asked for: the scene closes an open panel before opening another (it goes through "none"), see below
     fact.panel = name
 end
-local function osd_free() return true end
 
 local function hide_osd(kind)
     if nt_queue.osd == (kind == "vol" and "volume" or "notif") then nt_queue.set_osd("none") end
@@ -2520,6 +2646,7 @@ local lvl_gen = { v = 0, b = 0, m = 0 }
 local function show_level(row)
     if nt_queue.osd == "notif" and nt_now and nt_now.n then
         -- The level comes first: the notification on screen goes back to the front of the queue and shows again once the level has gone.
+        if nt_now.n._d then nt_now.n._d.sound = false end   -- (it has already chimed: it does not chime again when it comes back)
         table.insert(nt_queue, 1, nt_now.n)
         nt_now = nil
     end
@@ -2573,8 +2700,9 @@ on("bright_key", function(f)
 end)
 
 -- Notifications: Vitreus is the notification server now, so this is where they arrive.
+-- (plain text as the service gives it: it has removed the markup and read the entities, `&apos;` too; a second pass here lost text, see `nt_strip`)
 local function strip(s)
-    return ((s or ""):gsub("<[^>]*>", ""):gsub("&amp;", "&"):gsub("&lt;", "<"):gsub("&gt;", ">"):gsub("&quot;", '"'))
+    return s or ""
 end
 
 -- (all of it in one scope, exposing three names: a Lua chunk may only have 200 local variables, and this file is long)
@@ -2615,7 +2743,8 @@ local function nt_save()
 end
 local function nt_play(idx)
     local snd = NT_SOUNDS[idx] or NT_SOUNDS[1]
-    run("pw-play", { "--volume=0.7", NT_SOUND_DIR .. snd[1] .. ".oga" }, function() end)
+    -- (`timeout`: with PipeWire up but nothing to route it, pw-play waits for ever, and every chime left one more of them behind)
+    run("timeout", { "15", "pw-play", "--volume=0.7", NT_SOUND_DIR .. snd[1] .. ".oga" }, function() end)
 end
 
 -- What becomes of this one: recorded, shown, heard, and for how long.
@@ -2805,7 +2934,7 @@ local function show_notification(n)
 end
 
 pump = function()
-    if nt_now or #nt_queue == 0 or not osd_free() or nt_queue.hold then return end
+    if nt_now or #nt_queue == 0 or nt_queue.hold then return end
     show_notification(table.remove(nt_queue, 1))
 end
 nt_queue.pump = pump
@@ -2815,8 +2944,21 @@ sys.watch("notifications", function(list)
     -- The newest come first. What was already there when Vitreus started is not announced.
     for i = #list, 1, -1 do
         local n = list[i]
-        if not nt_seen[n.id] then
-            nt_seen[n.id] = true
+        -- (a notification replaced in place keeps its id, so its new words were ignored: what it said is kept beside the id, and a change
+        -- reaches the one on screen or the one waiting; it is not announced or recorded a second time)
+        local sig = tostring(n.title) .. "\n" .. tostring(n.body)
+        if nt_seen[n.id] and nt_seen[n.id] ~= sig then
+            nt_seen[n.id] = sig
+            if nt_now and nt_now.id == n.id then
+                nt_now.n = n
+                text.nt_title = strip((n.title ~= nil and n.title ~= "") and n.title or "Notification")
+                text.nt_body = strip(n.body)
+                fact.nt_body_on = text.nt_body ~= ""
+            else
+                for qi, q in ipairs(nt_queue) do if q.id == n.id then n._d = q._d; nt_queue[qi] = n end end
+            end
+        elseif not nt_seen[n.id] then
+            nt_seen[n.id] = sig
             local crit = tostring(n.urgency) == "critical" or tostring(n.urgency) == "2"
             if (nt_first or os.time() - nt_boot < 10) and not crit then
                 pcall(sys.call, "notifications.dismiss", n.id)   -- already there at login (or replayed just after): not announced, and gone for good; only a critical one (the update notice) survives it
@@ -2876,7 +3018,7 @@ end)
 -- goes to the scene as facts (`pal_*`, three per colour), which `palette-live.plm` turns into its `let` colours with
 -- `rgb(...)`; the lock screen, another program, still gets `palette.plm`. `iris.json` in Vitreus's data folder
 -- holds the two settings: { enabled = true, intensity = "medium" | "subtle" | "bold" }.
-local iris_cfg = { enabled = true, intensity = "bold" }       -- how far the wallpaper's accent is pushed: always Bold (the Theme page no longer offers a choice)
+local iris_cfg = { enabled = true, intensity = "bold" }       -- how far the wallpaper's accent is pushed: Subtle, Normal or Vivid on the Wallpaper page (subtle, medium, bold here); Vivid unless chosen
 local iris_last_wp = nil
 local iris_last_text = nil
 
@@ -3132,7 +3274,7 @@ end
 -- take round the windows (gaps_out: the layer's own reserved zone is not moved when the surface changes edge). It is sent at once and kept in
 -- vitreus_colors.lua, which hyprland.lua loads last (the installer adds the line). Up on the top, the gaps go back to what they were (bar_fx.orig, read once).
 -- Which docks are out (set by logic/dock.luau and logic/addons.luau): the windows keep clear of them (`wm_frame_sync`).
-dock_fx = { c = false, a = false, nc = 0, na = 0, enabled = true }     -- `enabled`: Settings > Bar > "Corner docks overlap windows" (off)
+dock_fx = { c = false, a = false, nc = 0, na = 0, enabled = true, ah = false }     -- `enabled`: Settings > Bar > "Corner docks overlap windows" (off); `ah`: "Auto-hide the bar and docks" (no room for either)
 -- The corner dock and the add-on pill stand over the windows' area, against the edge opposite the bar (the bottom for the Island and the top frame, the top for the
 -- bottom frame; down a side strip it is the far edge, the right one for the strip on the left and the left one for the strip on the right, where each pill stands upright in the top
 -- or the bottom corner and reaches in as far as it is thick). While one is out, that edge keeps the room for it: how far from the screen's edge the windows start, in pixels:
@@ -3142,24 +3284,33 @@ function dock_fx.room()
     local r = {}
     local c, a = dock_fx.c, dock_fx.a
     if not dock_fx.enabled or not (c or a) then return r end
+    if dock_fx.ah and not bar_fx.left then return r end           -- auto-hidden (the Island only): the windows go under where the docks come out
     local anchor = fact.bar_anchor
     local bu = 1.35 * (bar_fx and bar_fx.size or 1)
-    local k = (fact.bar_seg == true and 36 or (fact.bar_frame == true and 46 or 40)) / 34       -- a dock is as thick as the bar is in each layout (`dbu` in vitreus.plm)
+    local k = 40 / 34                                         -- a dock is as thick as the Island's bar in every layout (`dbu` in vitreus.plm)
     if anchor == "left" or anchor == "right" then
-        r[anchor == "left" and "right" or "left"] = math.floor(1.35 * 8 + 34 * bu * k + 13 + 0.5)       -- (the pills stand upright down a side strip: as thick as along the top)
+        r[anchor == "left" and "right" or "left"] = math.floor(40 * bu + 13 + 0.5)       -- (in a frame the dock stands on its edge and ends as far out as the strip, 40 * u)       -- (the pills stand upright down a side strip: as thick as along the top)
+    elseif not bar_fx.left then
+        -- The Island: as the bar's room on top (8 over it, the bar, then the user's gap), so the windows are as far from the dock as from the bar. The centred dock floats 8 above
+        -- the edge (`dkm`); in the corners the pills stand on it.
+        local gap = (bar_fx.orig and bar_fx.orig[3]) or 20
+        r.bottom = math.floor((dock_fx.mid and 8 or 0) + 34 * bu * k + gap + 0.5)
     else
-        r[anchor == "bottom" and "top" or "bottom"] = math.floor(1.35 * 8 + 34 * bu * k + 13 + 0.5)
+        r[anchor == "bottom" and "top" or "bottom"] = math.floor(40 * bu + 13 + 0.5)
     end
     return r
 end
 -- Raises the gaps `g` ({ top, right, bottom, left }) where a dock needs the room. Not for the gaps as they were (`left == false`), and not for what is written to Hyprland's file.
-function dock_fx.raise(g)
+-- `side` (optional): what Hyprland's scrolling layout adds at the left and right on top of gaps_out (`iris_fx.side_comp`), taken off a dock's room there,
+-- so the windows are as far from a dock down a side as from the frame (it was 8 more: 21 against 13).
+function dock_fx.raise(g, side)
     local r = dock_fx.room()
+    local c = side or 0
     local out = { g[1], g[2], g[3], g[4] }
     if r.top then out[1] = math.max(out[1], r.top) end
-    if r.right then out[2] = math.max(out[2], r.right) end
+    if r.right then out[2] = math.max(out[2], r.right - c) end
     if r.bottom then out[3] = math.max(out[3], r.bottom) end
-    if r.left then out[4] = math.max(out[4], r.left) end
+    if r.left then out[4] = math.max(out[4], r.left - c) end
     return out
 end
 function dock_fx.on() local r = dock_fx.room(); return r.top ~= nil or r.right ~= nil or r.bottom ~= nil or r.left ~= nil end
@@ -3186,18 +3337,19 @@ exec pleamar --scene "$P" --no-hud >>"$L" 2>&1
 -- and `bar_fx.on` where the bar is ("all", or a monitor's name); the Bar page below keeps both. A rule for each monitor (`m[NAME]`) says what its
 -- own gaps are, and the global gaps are what a monitor without a rule gets, so a monitor plugged in later does not borrow the bar's room.
 -- `left` says where the bar is for this code (false: the gaps as they were before us); left out, it is where the bar is now.
-function iris_fx.island_min() return (bar_fx.size or 1) < 0.995 and not bar_fx.left and bar_fx.edge == "top" end   -- the Island below 100 %: no reserved strip (a reserve is a plain number)
+function iris_fx.island_min() return math.abs((bar_fx.size or 1) - 1) > 0.005 and not bar_fx.left and bar_fx.edge == "top" and not dock_fx.ah end   -- the Island below 100 %: no reserved strip (a reserve is a plain number)
 function iris_fx.island_room() return math.floor(8 + 1.35 * 40 * (bar_fx.size or 1) + 0.5) end                  -- what it keeps above the windows instead: 8 and the bar (62 at 100 %): the window gap does the rest
 function iris_fx.gaps_code(left, nodock)
     local isl = left == nil and iris_fx.island_min()     -- (asked for the gaps as they were: `left` false, then none of this)
     local docked = left == nil and not nodock and dock_fx.on()      -- (`left` false asks for the gaps as they were, and `nodock` for what Hyprland keeps in its file: with no docks)
+    local even = left == nil and not nodock                          -- the Island's sides evened out (below); not for the gaps as they were, nor for Hyprland's file
     if left == nil then left = bar_fx.left or isl end
     local o = bar_fx.orig
     if not left and not o then return nil end
     o = o or { 20, 20, 20, 20 }
     local px = math.floor(1.35 * 8 + 0.5) + 13            -- the frame's thickness (8 * u) and a gap
-    local bz = bar_fx.size or 1                           -- Settings > Bar > Size: the bar's size, 0.7 to 1 (`bz` in vitreus.plm)
-    local lp = math.floor(1.35 * 46 * bz + 0.5) + 14
+    local bz = bar_fx.size or 1                           -- Settings > Bar > Size: the bar's size, 0.7 to 1.25 (`bz` in vitreus.plm)
+    local lp = math.floor(1.35 * 40 * bz + 0.5) + 13       -- the strip (as thick as the Island's bar, 40 * u) and the same gap as the frame's
     local function cfg(g)
         return string.format("hl.config({ general = { gaps_out = { top = %d, right = %d, bottom = %d, left = %d } } })", g[1], g[2], g[3], g[4])
     end
@@ -3206,7 +3358,7 @@ function iris_fx.gaps_code(left, nodock)
     end
     local WIDE = { top = { lp, px, px, px }, right = { px, lp, px, px }, bottom = { px, px, lp, px }, left = { px, px, px, lp } }   -- top, right, bottom, left: the wide one is the strip's
     local bar_gaps = WIDE[bar_fx.edge] or WIDE.left
-    if bar_fx.seg then bar_gaps = { math.floor(1.35 * 36 * bz + 0.5) + 10, px, px, px } end       -- the top frame in pieces: thin, but the windows start below the pieces (36 * u) and a gap
+    if bar_fx.seg then bar_gaps = { math.floor(1.35 * 36 * bz + 0.5) + 13, px, px, px } end       -- the top frame in pieces: thin, but the windows start below the pieces (36 * u) and a gap
     -- The scrolling layout keeps `gaps_in` between a column and the screen's left and right edges on top of `gaps_out` (the windows sat 8 px further in at the sides than on top, with the default),
     -- so the room we give is that much less there: `iris_fx.side_comp`, set from Settings > Hyprland (the layout and the gaps_in it reads). Only the room the frame asks for, not the user's own gaps.
     local function comp(g)
@@ -3215,7 +3367,7 @@ function iris_fx.gaps_code(left, nodock)
         return { g[1], math.max(0, g[2] - c), g[3], math.max(0, g[4] - c) }
     end
     bar_gaps = comp(bar_gaps)
-    if isl then bar_gaps = { o[1] + iris_fx.island_room(), o[2], o[3], o[4] } end
+    if isl then bar_gaps = comp({ o[1] + iris_fx.island_room(), o[2], o[3], o[4] }) end
     local everywhere = (bar_fx.on or "all") == "all"      -- the bar is on every monitor there is
     -- The global gaps stay the user's own, also with the bar on every monitor: each monitor's rule below carries the bar's room. On the next start
     -- they are read back as the gaps as they were (logic/bar_position.luau), and a Vitreus restarted with the Island's room in them (the bar on
@@ -3223,15 +3375,18 @@ function iris_fx.gaps_code(left, nodock)
     -- (Until the monitors are known, or with a scene file from before the copies, there are no rules: then the global gaps carry it, as before.)
     local ruled = #(bar_fx.mons or {}) > 0
     local base = (left and everywhere and not ruled) and bar_gaps or o
-    if docked and everywhere and not ruled then base = dock_fx.raise(base) end
+    if docked and everywhere and not ruled then base = dock_fx.raise(base, iris_fx.side_comp) end
     local parts = { cfg(base) }
     for _, name in ipairs(bar_fx.mons or {}) do
         if name:match("^[%w%._%-]+$") then
             local has_bar = left and (everywhere or (bar_fx.sel ~= nil and bar_fx.sel[name] == true))
             -- a monitor with only the frame (Settings > Bar, "Frame on the other monitors"; logic/bar_monitors.luau) gets the frame's room on every side
             local g = has_bar and bar_gaps or ((left and bar_fx.thin and not isl) and comp({ px, px, px, px }) or o)
+            -- The Island (no frame): the user's own gaps, but the scrolling layout's extra room at the sides taken off them (`comp`), so the windows sit as far from every edge.
+            -- Only in this monitor's rule: the global gaps stay the user's, which is what is read back as the original at the next start (logic/bar_position.luau).
+            if even and not left and (everywhere or (bar_fx.sel ~= nil and bar_fx.sel[name] == true)) then g = comp(o) end
             -- the docks are on the monitors the bar is on, framed or not
-            if docked and (everywhere or (bar_fx.sel ~= nil and bar_fx.sel[name] == true)) then g = dock_fx.raise(g) end
+            if docked and (everywhere or (bar_fx.sel ~= nil and bar_fx.sel[name] == true)) then g = dock_fx.raise(g, iris_fx.side_comp) end
             parts[#parts + 1] = rule(name, g)
         end
     end
@@ -3274,10 +3429,10 @@ end
 function iris_fx.niri_code(gap)
     local px = math.floor(1.35 * 8 + 0.5) + 13
     local bz = bar_fx.size or 1
-    local lp = math.floor(1.35 * 46 * bz + 0.5) + 14
+    local lp = math.floor(1.35 * 40 * bz + 0.5) + 13       -- the strip (as thick as the Island's bar, 40 * u) and the same gap as the frame's
     local WIDE = { top = { lp, px, px, px }, right = { px, lp, px, px }, bottom = { px, px, lp, px }, left = { px, px, px, lp } }
     local bar_gaps = WIDE[bar_fx.edge] or WIDE.left
-    if bar_fx.seg then bar_gaps = { math.floor(1.35 * 36 * bz + 0.5) + 10, px, px, px } end
+    if bar_fx.seg then bar_gaps = { math.floor(1.35 * 36 * bz + 0.5) + 13, px, px, px } end
     local isl = iris_fx.island_min()
     local everywhere = (bar_fx.on or "all") == "all"
     local function struts(g)
@@ -3391,7 +3546,7 @@ function iris_fx.apply_hypr()
     if g then parts[#parts + 1] = g; if bar_fx.left or iris_fx.island_min() then keep[#keep + 1] = iris_fx.gaps_code(nil, true) end end
     -- The gaps are Hyprland's settings, so they outlive the shell (a layer's reserved zone does not). gaps-undo.lua says how to give
     -- them back, and bin/vitreus-keep sends it when it stops for good; empty with the bar on the top, where there is nothing to undo.
-    pcall(sys.call, "files.write", "gaps-undo.lua", (bar_fx.left or iris_fx.island_min() or dock_fx.on()) and (iris_fx.gaps_code(false) or "") or "")
+    pcall(sys.call, "files.write", "gaps-undo.lua", (bar_fx.left or iris_fx.island_min() or dock_fx.on() or (iris_fx.side_comp or 0) > 0) and (iris_fx.gaps_code(false) or "") or "")
     if #parts == 0 then return end
     run("hyprctl", { "eval", table.concat(parts, " ") }, function() end)
     with_dirs(function(d)
@@ -3488,13 +3643,18 @@ function wpv.is(f)
     return ext ~= nil and wpv.exts[ext:lower()] == true
 end
 
-function wpv.poster(f) return wpv.frames .. "/" .. (f:match("([^/]+)$") or f) .. ".jpg" end
+-- (the folder is in the name too, as a short hash: by the file name alone, two folders with a picture of the same name shared one poster)
+function wpv.poster(f) return wpv.frames .. "/" .. hash(f:match("^(.*)/") or "") .. "-" .. (f:match("([^/]+)$") or f) .. ".jpg" end
 
 -- The video a poster was taken from, or nil when `path` is not a poster.
 function wpv.from_poster(path)
     if not (wpv.frames and wpv.dir and path) then return nil end
     local name = path:match("^" .. wpv.frames:gsub("%p", "%%%0") .. "/([^/]+)%.jpg$")
-    return name and (wpv.dir .. "/" .. name) or nil
+    if not name then return nil end
+    -- (the name starts with the folder's hash, `wpv.poster`: without taking it off, the video "was not the one shown" and the watcher stopped it)
+    local h, rest = name:match("^(%w+)%-(.+)$")
+    if h and h == hash(wpv.dir) then name = rest end
+    return wpv.dir .. "/" .. name
 end
 
 -- Calls `fn` with the picture to read for `f`: `f` itself, or its poster (made first when there is none yet; nil when it cannot be).
@@ -3536,6 +3696,9 @@ end
 -- watcher, while the wallpaper is hidden, ignores SIGTERM and stayed behind, a second one playing. The video is decoded on the card (`hwdec=auto-safe`):
 -- a 4K60 one decoded on the CPU took cores while the wallpaper showed.
 function wpv.settle(f, keep_running)
+    -- `wpv.keep`: the picker's cards are already playing this video as a try; it is kept running, not started again from the top
+    if wpv.keep and wpv.keep == f then keep_running = true end
+    wpv.keep = nil
     wpv.cur = wpv.is(f) and f or nil
     wpv_save()
     local line = "pkill -9 -x mpvpaper"
@@ -3567,7 +3730,7 @@ function wph.src_of(p)
     if p and r and r.out == p then return r.src end
     return nil
 end
--- The wallpaper is asked of awww every half second; when it changes, Iris is run on the new one.
+-- The wallpaper is asked of awww every six seconds; when it changes, Iris is run on the new one.
 local wp_on_change = function(path) end       -- the wallpaper page, further down, takes this over
 -- A wallpaper that the hexagon dissolve is bringing in: awww is told about it only when the dissolve is over, a couple of seconds on, and
 -- until then it still says the old one. Taking that for a change made from outside would run Iris on the old wallpaper again (the colours
@@ -3611,6 +3774,7 @@ local function check_wallpaper()
         if path and shown ~= iris_last_wp then
             iris_last_wp = shown
             lens_image(path)
+            if para_fx then para_fx.tell(path, wpv.from_poster(path) ~= nil) end
             wp_on_change(shown)
             run_iris(framed or path, not (iris_cfg.enabled and not iris_cfg.preset))
         end
@@ -3669,6 +3833,7 @@ do
     local ok, saved = pcall(sys.ask, "files.read", "iris.json", "json")
     if ok and type(saved) == "table" then
         if saved.enabled ~= nil then iris_cfg.enabled = saved.enabled and true or false end
+        if saved.intensity == "subtle" or saved.intensity == "medium" or saved.intensity == "bold" then iris_cfg.intensity = saved.intensity end
         local pr = tonumber(saved.preset)
         if pr and (math.floor(pr) == iris_fx.CASSETTE or math.floor(pr) == iris_fx.UWU or math.floor(pr) == iris_fx.CYBER or math.floor(pr) == iris_fx.MILK or math.floor(pr) == iris_fx.PROXY or math.floor(pr) == iris_fx.PAPER or math.floor(pr) == iris_fx.DOODLE or math.floor(pr) == iris_fx.CUSTOM) then iris_cfg.preset = math.floor(pr) end
         -- The look (the shape of the shell) is its own setting, apart from where the colours come from: Iris may colour a Retro or UwU shell and it stays one.
@@ -3691,6 +3856,7 @@ do
         local v = iris_cfg.look == iris_fx.CASSETTE and 1 or iris_cfg.look == iris_fx.UWU and 2 or iris_cfg.look == iris_fx.CYBER and 3 or iris_cfg.look == iris_fx.MILK and 4 or iris_cfg.look == iris_fx.PROXY and 3 or iris_cfg.look == iris_fx.PAPER and 6 or iris_cfg.look == iris_fx.DOODLE and 7 or 0
         local av = iris_cfg.look == iris_fx.PROXY and 5 or iris_cfg.look == iris_fx.PAPER and 4 or v             -- add-ons know Proxy as 5 (the desktop widgets below still take it as Cyber's 3)
         addon_look = av
+        fact.look_a = av
         local vw = iris_cfg.look == iris_fx.PROXY and 5 or v       -- the clock, system monitor and cards know Proxy as 5 (the other desktop scenes still take it as Cyber's 3)
         fact.look_w = vw          -- and kept, for a widget that starts later to ask for
         fact.look_v = v
@@ -3705,7 +3871,7 @@ do
         if v == 2 then
             run("pgrep", { "-f", "pleamar --scene .*/cursortrail/cursortrail.plm" }, function(_, code)
                 if code == 0 then run("pleamar", { "--say", "cursortrail", "fact look 2" }, function() end) return end
-                exec_on_desktop('[ -n "$NIRI_SOCKET" ] || vitreus-keep "$HOME/.config/pleamar/shells/vitreus/cursortrail/cursortrail.plm"')
+                exec_on_desktop('[ -n "$NIRI_SOCKET" ] || vitreus-keep "${XDG_CONFIG_HOME:-$HOME/.config}/pleamar/shells/vitreus/cursortrail/cursortrail.plm"')
                 scene_say_when_up("cursortrail", { "fact look 2" })
             end)
         else
@@ -3864,7 +4030,7 @@ do
     end
     local function show()
         all[1].label = "Default · " .. default_font()
-        text.font_for = "Font for " .. label()
+        text.font_for = string.upper("Font for " .. label())
         text.font_name = chosen or default_font()
         local same = (chosen or default_font()) == inuse
         if same then
@@ -3904,9 +4070,19 @@ do
                 pv_n = pv_n + 1
                 local out = d.data .. "/font-preview.png"
                 run("magick", { "-background", "none", "-fill", "#ffffff", "-font", file,
-                    "-pointsize", "78", "label:Aa Bb Cc 0123", "-pointsize", "40", "label:The quick brown fox jumps over",
+                    -- as wide as the card (1775 x 290 is 410 x 84 on `pw`, `pu`), in two columns: a big sample, a sentence and a line of the shell
+                    -- on the left; the alphabet, the figures and the signs on the right
+                    "(", "-pointsize", "84", "label:Aa Bb Cc 0123", "-size", "1x26", "xc:none", "+size",
+                    "-pointsize", "40", "label:The quick brown fox jumps over the lazy dog", "-size", "1x26", "xc:none", "+size",
                     "-pointsize", "32", "label:Settings · 12:45 PM · Wi-Fi 78%",
-                    "-gravity", "west", "-background", "none", "-append", "-gravity", "northwest", "-extent", "1420x440", out },
+                    "-gravity", "west", "-background", "none", "-append", "+repage", "-gravity", "northwest", "-extent", "1010x290", "+repage", ")",
+                    "(", "+gravity", "-pointsize", "36", "label:ABCDEFGHIJKLM", "-size", "1x10", "xc:none", "+size",
+                    "-pointsize", "36", "label:NOPQRSTUVWXYZ", "-size", "1x10", "xc:none", "+size",
+                    "-pointsize", "36", "label:abcdefghijklm", "-size", "1x10", "xc:none", "+size",
+                    "-pointsize", "36", "label:nopqrstuvwxyz", "-size", "1x10", "xc:none", "+size",
+                    "-pointsize", "36", "label:0123456789  ! ? & @ # ( ) / %",
+                    "-gravity", "west", "-background", "none", "-append", "+repage", "-gravity", "northwest", "-extent", "765x290", "+repage", ")",
+                    "+gravity", "+append", "+repage", out },
                     function(_, c2) if c2 == 0 then text.font_prevurl = out .. "?" .. pv_n end end)
             end)
         end, { env = { FONTCONFIG_FILE = "/etc/fonts/fonts.conf" } })
@@ -4047,8 +4223,13 @@ do
         -- The lock screen is drawn in the same typeface, so it starts again too, unless the session is locked right now (that would unlock it).
         after(500, function()
             run("pleamar", { "--say", "lockscreen", "get locked" }, function(locked)
-                local pat = tostring(locked):match("true") and "(vitreus\\.plm|desktop|addons/)" or "(vitreus\\.plm|desktop|addons/|lockscreen/lockscreen\\.plm)"
+                local pat = tostring(locked):match("true") and "(desktop|addons/)" or "(desktop|addons/|lockscreen/lockscreen\\.plm)"
                 run("pkill", { "-f", "pleamar --scene .*/vitreus/" .. pat }, function() end)
+                -- The shell itself through `bar_fx.restart`, as the Bar page does: killed outright it came back only under a keeper, and one
+                -- started by hand was simply gone.
+                with_dirs(function(d)
+                    run("setsid", { "-f", "sh", "-c", bar_fx.restart, "sh", d.conf .. "/vitreus.plm", d.data .. "/vitreus.log" }, function() end)
+                end)
             end)
         end)
     end)
@@ -4177,7 +4358,8 @@ local wp_picker_start = function() end   -- the picker takes this over, further 
 local wp_made = {}
 local wp_cache = nil
 
-local function crop_path(f, kind) return wp_cache .. "/" .. (f:match("([^/]+)$") or f) .. "." .. kind .. ".jpg" end
+-- (with its folder's short hash, as the posters: a picture of the same name in another folder showed this one's thumbnail)
+local function crop_path(f, kind) return wp_cache .. "/" .. hash(f:match("^(.*)/") or "") .. "-" .. (f:match("([^/]+)$") or f) .. "." .. kind .. ".jpg" end
 
 -- Make whichever of `files` has no cropped copy yet, then call `done`.
 local function wp_crop(files, kind, w, h, done)
@@ -4272,6 +4454,14 @@ local function wp_hex(path, x, y, ok_fn, fail_fn)
     end)
 end
 
+-- The dissolve says when it is over (awww shows the new picture): the video that goes with it starts now, not at the watcher's next look.
+on("wp_hex_done", function()
+    wp_pending = nil
+    wpv.flush()
+    -- the parallax was held off for a video and a picture came through the dissolve: it comes back (wptrans asks awww, which already shows it)
+    if para_fx.held and not wpv.cur then para_fx.tell() end
+end)
+
 -- `how`: awww's transition flags. `hex`, `{ x =, y = }`: the dissolve from that point instead (the wallpaper picker's).
 -- `quiet`: a try, not a change: no video, no colours (Iris), and the wallpaper in use is not changed (the cards' live preview).
 local function wp_apply(path, how, started, hex, quiet)
@@ -4288,8 +4478,13 @@ local function wp_apply(path, how, started, hex, quiet)
                     if started then started() end     -- `started`: awww has the picture, the change is under way
                 end)
             end
+            -- The parallax draws its own copy of the wallpaper over awww's: it is told at once which picture is coming (a try from the cards too), or the old
+            -- one would cover the change. (The dissolve hands its own picture over itself.)
+            -- A video through the dissolve is told before it starts: at its end the dissolve lays the parallax's still of the poster over the
+            -- wallpaper, which covered mpvpaper a few frames in (the video looked frozen).
+            if not hex or wpv.is(path) then para_fx.tell(pic, wpv.is(path)) end
             if hex then
-                -- the video (or the stop of the one playing) waits for the end of the dissolve: see `check_wallpaper`
+                -- the video (or the stop of the one playing) waits for the end of the dissolve: see `wp_hex_done`
                 wp_hex(pic, hex.x, hex.y, function() wpv.next = { path }; if started then started() end end, by_awww)
             else
                 by_awww()
@@ -4362,13 +4557,18 @@ local function wp_analyse_missing()
     wp_analysing = #todo
     wp_count_text()
     if #todo == 0 then return end
+    -- (each listing of the folder started another of these beside the one still going: a pump that is no longer the newest stops)
+    wph.an_gen = (wph.an_gen or 0) + 1
+    local mine = wph.an_gen
     local nexti, active, finished = 1, 0, 0
     local function pump()
+        if mine ~= wph.an_gen then return end
         while active < 3 and nexti <= #todo do
             local f = todo[nexti]
             nexti = nexti + 1
             active = active + 1
             wp_analyse_one(f, function()
+                if mine ~= wph.an_gen then return end
                 active = active - 1
                 finished = finished + 1
                 wp_analysing = #todo - finished
@@ -4417,7 +4617,8 @@ local function wp_load()
             wp_cache = d.cache
             run("mkdir", { "-p", d.cache }, function() end)
             run("ls", { "-1", wp_dir }, function(list, code)
-                if code ~= 0 or not list then return end
+                -- (a folder that is not there is an empty one: left as it was, the page named the new folder over the old one's pictures)
+                if code ~= 0 or not list then list = "" end
                 wp_files = {}
                 for name in list:gmatch("[^\n]+") do
                     local ext = name:match("%.(%w+)$")
@@ -4478,8 +4679,10 @@ end)
 wp_delq = { asked = nil, undo = {} }      -- (`undo`: what was sent away, newest last: { orig = where it was, kept = where it went if not to the trash })
 local function wp_undo_arm()                  -- the Undo pill stays for 10 s after the last deletion, then the list is let go (the files stay in the trash)
     fact.wp_undo = #wp_delq.undo > 0
-    local n = #wp_delq.undo
-    after(10000, function() if #wp_delq.undo == n and n > 0 then wp_delq.undo = {}; fact.wp_undo = false end end)
+    -- (which arming this is, not how long the list is: delete, Undo, delete again left the first timer finding the same length and taking the pill away early)
+    wp_delq.gen = (wp_delq.gen or 0) + 1
+    local g = wp_delq.gen
+    after(10000, function() if wp_delq.gen == g and #wp_delq.undo > 0 then wp_delq.undo = {}; fact.wp_undo = false end end)
 end
 on("wp_del", function(i)
     if wh_hook.active() then return end
@@ -4602,6 +4805,63 @@ do
     wp_show_refresh()
 end
 
+-- Parallax: the wallpaper leans away from the mouse. The wallpaper's own layer draws it (wptrans/: the picture, a little larger than the screen, over
+-- awww's); this keeps the switch (`parallax.json`) and tells that scene whether it is wanted and which picture awww shows. Not while a video is the
+-- wallpaper: mpvpaper's is the picture then. A global: this chunk is at Luau's limit of locals.
+para_fx = { on = false, amt = 40, mode = 1, due = false, held = false }       -- `amt`: pixels at the screen's edge (10 to 120); `mode`: 0 tight, 1 smooth, 2 floaty
+do
+    local ok, saved = pcall(sys.ask, "files.read", "parallax.json", "json")
+    if ok and type(saved) == "table" then
+        para_fx.on = saved.on == true
+        if type(saved.amt) == "number" then para_fx.amt = math.max(10, math.min(120, saved.amt)) end
+        if saved.mode == 0 or saved.mode == 1 or saved.mode == 2 then para_fx.mode = saved.mode end
+    end
+end
+function para_fx.refresh()
+    fact.wp_para = para_fx.on
+    fact.wp_para_lv = (para_fx.amt - 10) / 110
+    fact.wp_para_mode = para_fx.mode
+    text.wp_para_text = para_fx.amt .. " px"
+end
+para_fx.refresh()
+function para_fx.save() pcall(sys.call, "files.write", "parallax.json", { on = para_fx.on, amt = para_fx.amt, mode = para_fx.mode }) end
+-- Strength and Motion, to the scene: by themselves (a slider being dragged says it at most every 80 ms, and the picture is not made again).
+function para_fx.look()
+    if para_fx.due then return end
+    para_fx.due = true
+    after(80, function()
+        para_fx.due = false
+        run("pleamar", { "--say", "wptrans", "fact para_amt " .. para_fx.amt, "fact para_mode " .. para_fx.mode }, function() end)
+        para_fx.save()
+    end)
+end
+-- `pic`: what awww is showing or about to show, when it is known (else the scene asks awww). `video`: that picture is a video's poster.
+function para_fx.tell(pic, video)
+    local want = para_fx.on and not video and not (pic == nil and wpv.cur)
+    para_fx.held = para_fx.on and not want          -- on, but kept off for a video
+    run("pleamar", { "--say", "wptrans", "fact para_amt " .. para_fx.amt, "fact para_mode " .. para_fx.mode, "text pwall " .. (pic or ""),
+                     "fact para_want " .. (want and "true" or "false"), "emit para_set" }, function() end)
+end
+on("wp_para_toggle", function()
+    para_fx.on = not para_fx.on
+    para_fx.refresh()
+    para_fx.save()
+    para_fx.tell()
+end)
+on("wp_para_lv_set", function(t)
+    para_fx.amt = math.floor((10 + 110 * math.max(0, math.min(1, tonumber(t) or 0))) / 2 + 0.5) * 2
+    para_fx.refresh()
+    para_fx.look()
+end)
+on("wp_para_mode_set", function(i)
+    i = math.floor((tonumber(i) or 1) + 0.5)
+    if i < 0 or i > 2 then return end
+    para_fx.mode = i
+    para_fx.refresh()
+    para_fx.look()
+end)
+on("para_ask", function() para_fx.tell() end)
+
 on("wp_show_toggle", function()
     wp_show = not wp_show
     if wp_show then wp_next = os.time() + wp_mins * 60 end
@@ -4695,7 +4955,7 @@ function glass.push_obs()
     run("pleamar", { "--say", "files", "fact obs " .. v }, function() end)
     run("pleamar", { "--say", "desktopnotes", "fact obs " .. v }, function() end)
     run("pleamar", { "--say", "files", "fact gop " .. glass.opacity, "fact gbend " .. tostring((glass.bend or glass.live) and not glass.game and not glass.hg), "fact grefr " .. glass.refr, "fact gdisp " .. glass.disp,
-        "fact gclear " .. glass.clear, "fact gdome " .. glass.dome, "fact gmilk " .. glass.milk, "fact gsmoke " .. glass.smoke, "fact grim " .. glass.rim }, function() end)     -- Files wears the same glass
+        "fact gclear " .. glass.clear, "fact gdome " .. glass.dome, "fact gmilk " .. glass.milk, "fact gsmoke " .. glass.smoke, "fact grim " .. glass.rim, "fact glive " .. tostring(glass.live), "fact gcap " .. glass.cap_ms }, function() end)     -- Files wears the same glass
 end
 -- Game Mode (logic/gamemode.luau) takes the glass away while it is on: the bar and the drawers go flat obsidian (`game_on` in the scene's `obs`) and
 -- nothing bends, so nothing is captured behind them, every frame of a game being "something behind that changed"; and with Hyprland's blur off
@@ -4723,11 +4983,12 @@ function game_fx.hg_check()
 end
 after(3000, function() game_fx.hg_check() end)
 local function glass_save_soon()
-    glass.push_obs()
+    -- (the other scenes are told with the save, not on every step of a drag: telling them starts seven commands each time, and a slider stuttered)
     if glass_save_waiting then return end
     glass_save_waiting = true
     after(500, function()
         glass_save_waiting = false
+        glass.push_obs()
         pcall(sys.call, "files.write", "glass.json", { opacity = glass.opacity, rim = glass.rim, refr = glass.refr, disp = glass.disp, dome = glass.dome, milk = glass.milk, smoke = glass.smoke, bend = glass.bend, live = glass.live, bend_mon = glass.bend_mon, obsidian = glass.obsidian, clear = glass.clear, auto = glass.auto, cap_ms = glass.cap_ms, rest = glass.rest })
     end)
 end
@@ -4800,6 +5061,12 @@ on("glass_auto_toggle", function() glass.auto = not glass.auto; glass_refresh();
 -- (In a block of its own: the file is at Luau's limit of 200 locals in one scope, and this section's are its own.)
 do
 local DISP_SCALES = { "auto", 1.0, 1.25, 1.333333, 1.5, 1.75, 2.0 }
+-- Hyprland says a scale with two decimals: 1.333333 comes back as 1.33, which was then saved and given to Hyprland at the next start, where it
+-- is not a scale that divides the mode. The nearest of the list is what was meant.
+function disp_snap_scale(s)
+    for _, v in ipairs(DISP_SCALES) do if v ~= "auto" and math.abs(v - s) < 0.01 then return v end end
+    return s
+end
 local DISP_TRIAL = 15
 local disp_mons = {}                      -- what Hyprland says: { name, desc, key, w, h, hz, x, y, scale, transform, modes, sdrb, sdrs }
 local disp_draft = {}                     -- name -> { res, hz, x, y, scale, transform, sdrb, sdrs }: what the page edits
@@ -4898,7 +5165,7 @@ local function disp_changed(m, d)
         or math.abs((cur.sdrs or 1) - (d.sdrs or 1)) > 0.004
 end
 
--- What the page shows: the canvas (each monitor a box, all fitted into 400 x 118), the rows of choices for the
+-- What the page shows: the canvas (each monitor a box, all fitted into 400 x 190), the rows of choices for the
 -- monitor that is selected, and how far its draft is from what is on the screen.
 local function disp_render()
     local n = #disp_mons
@@ -4933,13 +5200,17 @@ local function disp_render()
         -- the pointer, which is what made the drag jump to the top or bottom
         f, ox, oy, x0, y0 = disp_grab_origin.f, disp_grab_origin.ox, disp_grab_origin.oy, disp_grab_origin.x0, disp_grab_origin.y0
     else
-        -- room round the monitors (a quarter of the biggest one on each side), so a box can be moved past the others
-        local mw, mh = 0, 0
-        for _, m in ipairs(disp_mons) do
-            local w, h = disp_size(m, disp_draft[m.name])
-            mw, mh = math.max(mw, w), math.max(mh, h)
+        -- the monitors fill the canvas: one alone takes nearly all of it, and more shrink only as far as they need to
+        -- fit side by side. With more than one, a little room round them (a tenth of the biggest on each side) so a
+        -- box can still be pulled past the edge of the others; while dragging the canvas holds still anyway.
+        if n > 1 then
+            local mw, mh = 0, 0
+            for _, m in ipairs(disp_mons) do
+                local w, h = disp_size(m, disp_draft[m.name])
+                mw, mh = math.max(mw, w), math.max(mh, h)
+            end
+            x0, y0, x1, y1 = x0 - mw / 10, y0 - mh / 10, x1 + mw / 10, y1 + mh / 10
         end
-        x0, y0, x1, y1 = x0 - mw / 4, y0 - mh / 4, x1 + mw / 4, y1 + mh / 4
         f = math.min((cw - 2 * pad) / math.max(1, x1 - x0), (ch - 2 * pad) / math.max(1, y1 - y0))
         ox = (cw - (x1 - x0) * f) / 2
         oy = (ch - (y1 - y0) * f) / 2
@@ -5061,6 +5332,9 @@ function disp_wm.load(done)
                 local paths = {}
                 for f in (found or ""):gmatch("%S+") do paths[#paths + 1] = f end
                 if #paths == 0 then return done() end
+                -- (`done` once, when every connector has answered: it was called once per monitor with modes, and never when none had any)
+                local left = #paths
+                local function answered() left = left - 1; if left == 0 then done() end end
                 for _, f in ipairs(paths) do
                     -- /sys/class/drm/card<N>-<name>/modes -> <name>
                     local name = f:match("/card%d+%-([^/]+)/modes$")
@@ -5071,8 +5345,9 @@ function disp_wm.load(done)
                                 if not seen[r] then seen[r] = true; res[#res + 1] = r end
                             end
                             -- (a connector with nothing plugged in has an empty list, and may not answer at all: each one that does is a reason to look again)
-                            if #res > 0 then disp_wm.modes[name] = res; done() end
+                            if #res > 0 then disp_wm.modes[name] = res end
                         end
+                        answered()
                     end)
                 end
             end)
@@ -5159,6 +5434,19 @@ local function disp_read(done, max_age)
                 disp_wm.load(function() disp_read(done) end)
                 return
             end
+        elseif ok and type(list) == "table" and #list > 0 and not on_niri and not list[1].availableModes then
+            -- a newer pleamar-wm answers `hyprctl monitors -j` in Hyprland's JSON, but with no list of modes and no way to change a monitor on the fly
+            -- (Hyprland and hyprctl-niri both list `availableModes`): the same read-only page as the text answer, saved to session.conf.
+            if not disp_wm.loaded then
+                disp_wm.loaded = true
+                disp_wm.load(function() disp_read(done) end)
+                return
+            end
+            for _, j in ipairs(list) do
+                j.description = "pleamar-wm: applied at the next login (saved in session.conf)"
+                j.availableModes = disp_wm.modes_of(j.name, j.width, j.height, math.floor((j.refreshRate or 60) + 0.5))
+            end
+            disp_ro = true
         else
             disp_ro = false
         end
@@ -5169,7 +5457,7 @@ local function disp_read(done, max_age)
             for _, mode in ipairs(j.availableModes or {}) do modes[#modes + 1] = mode end
             mons[#mons + 1] = {
                 name = j.name, desc = j.description or "", key = disp_key_of(j), w = j.width, h = j.height, hz = j.refreshRate or 60,
-                x = j.x, y = j.y, scale = j.scale or 1, transform = j.transform or 0, modes = modes,
+                x = j.x, y = j.y, scale = disp_snap_scale(j.scale or 1), transform = j.transform or 0, modes = modes,
                 sdrb = j.sdrBrightness or 1, sdrs = j.sdrSaturation or 1,
             }
         end
@@ -5183,7 +5471,9 @@ local function disp_read(done, max_age)
         disp_draft = fresh
         disp_render()
         if done then done() end
-        -- the wallpaper each monitor shows, for the canvas's tiles
+        -- the wallpaper each monitor shows, for the canvas's tiles: only while the Display page is open (the 5-second watch asked for them for
+        -- the life of the shell, on every machine, awww or not)
+        if not (fact.panel == "settings" and fact.set_page == "pg_disp") then return end
         run("awww", { "query" }, function(o, c)
             if c ~= 0 or not o then return end
             local wp = {}
@@ -5459,7 +5749,7 @@ on("disp_profile_save", function()
     local name = ((text.disp_profile_name or ""):gsub("^%s+", ""):gsub("%s+$", ""))
     if name == "" then name = "Profile " .. (#disp_profiles + 1) end
     table.insert(disp_profiles, 1, { name = name, key = key, mons = specs })
-    while #disp_profiles > 6 do table.remove(disp_profiles) end
+    while #disp_profiles > 4 do table.remove(disp_profiles) end   -- (four: the page has four rows; a fifth and sixth were kept, unseen, and still put on by themselves)
     text.disp_profile_name = ""
     disp_profiles_save()
     disp_render()
@@ -5498,6 +5788,7 @@ local function disp_watch()
                         if disp_draft[name] then specs[name] = disp_copy(spec) end
                     end
                     disp_key_seen = key
+                    if next(specs) == nil then return end   -- (none of its monitors is here by those names: nothing to send, rather than an empty change that "failed")
                     disp_send(specs, function() text.disp_msg = "Put on the profile “" .. p.name .. "”." end)
                     return
                 end
@@ -5575,6 +5866,86 @@ end
 local function wx_round(x) return math.floor(x + 0.5) end
 local function urlenc(s) return (s:gsub("[^%w%-_%.~]", function(c) return string.format("%%%02X", c:byte()) end)) end
 
+--  The sky over the calendar: where the sun is between sunrise and sunset (0 to 1), how much daylight there is (0 night, 1 day, the twilight in between),
+--  the moon's phase, and the next 24 hours of temperature. Worked out again every few minutes, so the sun crosses the card through the day.
+wx_sky = { rise = nil, set = nil, hours = nil }
+function wx_sky.hm(iso)          -- "2026-11-14T07:12" -> minutes since midnight
+    local h, m = tostring(iso or ""):match("T(%d+):(%d+)")
+    if not h then return nil end
+    return tonumber(h) * 60 + tonumber(m)
+end
+function wx_sky.clock(mins)
+    local h, m = math.floor(mins / 60), math.floor(mins % 60)
+    local h12 = h % 12
+    if h12 == 0 then h12 = 12 end
+    return string.format("%d:%02d %s", h12, m, h < 12 and "am" or "pm")
+end
+function wx_sky_tick()
+    -- The clock of the place the weather is for: its sunrise, sunset and hours are in its own time (`timezone=auto`), so the machine's own
+    -- clock put a Tokyo forecast's day in the night of a machine in Madrid.
+    local t = wx_sky.off and os.date("!*t", os.time() + wx_sky.off) or os.date("*t")
+    local now = t.hour * 60 + t.min + t.sec / 60
+    local r, st = wx_sky.rise, wx_sky.set
+    if r and st and st > r then
+        fact.wx_sun = math.max(0, math.min(1, (now - r) / (st - r)))
+        local edge = math.min(now - r, st - now)              -- minutes into the day from the nearer end (negative at night)
+        fact.wx_dl = math.max(0, math.min(1, (edge + 35) / 70))
+    else
+        fact.wx_sun = 0.5
+        fact.wx_dl = (t.hour >= 7 and t.hour < 18) and 1 or 0
+    end
+    --  The moon: days since a known new moon (2000-01-06 18:14 UTC), over the synodic month.
+    local days = (os.time() - 947182440) / 86400
+    fact.wx_moon = (days / 29.530588853) % 1
+    --  The hours: from the one we are in, 25 of them.
+    local hrs = wx_sky.hours
+    if type(hrs) == "table" and type(hrs.time) == "table" then
+        local stamp = string.format("%04d-%02d-%02dT%02d:00", t.year, t.month, t.day, t.hour)
+        local first = nil
+        for i, ts in ipairs(hrs.time) do if ts == stamp then first = i break end end
+        -- (an hour not in the forecast, an old one kept from offline: its first hour was shown as "Now", hours stale. The strip is left as it was.)
+        if not first then return end
+        local rows, lo, hi = {}, 1e9, -1e9
+        for j = 0, 24 do
+            local i = first + j
+            local v = hrs.temperature_2m and hrs.temperature_2m[i]
+            if type(v) ~= "number" then break end
+            local hh = tonumber(tostring(hrs.time[i]):match("T(%d+)")) or 0
+            local h12 = hh % 12
+            if h12 == 0 then h12 = 12 end
+            rows[#rows + 1] = {
+                t = v, deg = wx_round(v) .. "°",
+                label = j == 0 and "Now" or (h12 .. (hh < 12 and "a" or "p")),
+                kind = wx_kind((hrs.weather_code and hrs.weather_code[i]) or 3),
+                p = (hrs.precipitation_probability and hrs.precipitation_probability[i]) or 0,
+            }
+            lo, hi = math.min(lo, v), math.max(hi, v)
+        end
+        if #rows > 1 then
+            model.wx_hrs = rows
+            fact.wx_hlo = lo
+            fact.wx_hhi = hi
+            fact.wx_hn = #rows
+        end
+    end
+end
+function wx_sky_take(w)
+    local dd = w.daily or {}
+    wx_sky.rise = wx_sky.hm(dd.sunrise and dd.sunrise[1])
+    wx_sky.set = wx_sky.hm(dd.sunset and dd.sunset[1])
+    text.wx_rise = wx_sky.rise and wx_sky.clock(wx_sky.rise) or "—"
+    text.wx_set = wx_sky.set and wx_sky.clock(wx_sky.set) or "—"
+    wx_sky.hours = w.hourly
+    wx_sky.off = tonumber(w.utc_offset_seconds)
+    local c = w.current or {}
+    fact.wx_wind_n = type(c.wind_speed_10m) == "number" and c.wind_speed_10m or 5
+    if type(c.wind_direction_10m) == "number" then
+        -- which way the clouds drift across the card: wind from the west (270) pushes them right
+        fact.wx_wdir = math.sin(math.rad(c.wind_direction_10m)) > 0 and -1 or 1
+    end
+    wx_sky_tick()
+end
+
 local function wx_show(w)
     if type(w) ~= "table" or type(w.current) ~= "table" or type(w.daily) ~= "table" then return false end
     local sym = wx_cfg.units == "celsius" and "°C" or "°F"
@@ -5610,6 +5981,21 @@ local function wx_show(w)
         }
     end
     model.wx_days = rows
+    --  The calendar's sky: each day's high and low as numbers (the week's range bars), the hours ahead (its temperature curve), and where the sun is.
+    local wlo, whi = 1e9, -1e9
+    for i = 1, #rows do
+        local hn, ln = dd.temperature_2m_max[i] or 0, dd.temperature_2m_min[i] or 0
+        rows[i].hn, rows[i].ln = hn, ln
+        rows[i].pop = type(pp) == "table" and pp[i] or 0
+        rows[i].desc = WX_DESC[dd.weather_code[i] or 3] or ""
+        local y, m, d = tostring(dd.time[i] or ""):match("^(%d+)-(%d+)-(%d+)$")
+        rows[i].full = i == 1 and "Today" or (y and os.date("%A", os.time({ year = tonumber(y), month = tonumber(m), day = tonumber(d), hour = 12 })) or rows[i].label)
+        rows[i].popt = math.floor((rows[i].pop or 0) + 0.5) .. "%"
+        wlo, whi = math.min(wlo, ln), math.max(whi, hn)
+    end
+    if #rows > 0 then fact.wx_wlo = wlo; fact.wx_whi = whi end
+    model.wx_days = rows
+    wx_sky_take(w)
     fact.wx_ok = true
     if addon_push_wx then addon_push_wx() end
     return true
@@ -5631,10 +6017,12 @@ end
 local function wx_forecast(d)
     local unit = wx_cfg.units == "celsius" and "celsius" or "fahrenheit"
     local url = "https://api.open-meteo.com/v1/forecast?latitude=" .. wx_loc.lat .. "&longitude=" .. wx_loc.lon
-        .. "&current=temperature_2m,weather_code,apparent_temperature,relative_humidity_2m,wind_speed_10m,wind_direction_10m&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max"
+        .. "&current=temperature_2m,weather_code,is_day,apparent_temperature,relative_humidity_2m,wind_speed_10m,wind_direction_10m&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset"
+        .. "&hourly=temperature_2m,weather_code,precipitation_probability&forecast_hours=48"
         .. "&wind_speed_unit=" .. (unit == "celsius" and "kmh" or "mph") .. "&temperature_unit=" .. unit .. "&timezone=auto&forecast_days=7"
     run("curl", { "-s", "-L", "--max-time", "10", "-o", d.data .. "/wx.json", url }, function(_, code)
-        wx_done(code == 0 and wx_show(wx_read("wx.json")))
+        local shown, fine = pcall(wx_show, wx_read("wx.json"))   -- (an answer with a piece missing is no weather, not an error)
+        wx_done(code == 0 and shown and fine)
     end)
 end
 
@@ -5647,15 +6035,20 @@ function wx_refresh_now()
         local url = loc ~= "" and ("https://geocoding-api.open-meteo.com/v1/search?name=" .. urlenc(loc) .. "&count=1&format=json")
             or "https://ipwho.is/"
         run("curl", { "-s", "-L", "--max-time", "10", "-o", d.data .. "/wx-loc.json", url }, function(_, code)
+            -- (the place was changed while this was out: its answer is for the old one, and taking it set the old place back, which the
+            -- asking-again then fetched instead of the new one)
+            if wx_again then return wx_done(true) end
             local r = code == 0 and wx_read("wx-loc.json") or nil
             local lat, lon
             if r and loc ~= "" and type(r.results) == "table" and r.results[1] then
                 local g = r.results[1]
                 lat, lon = g.latitude, g.longitude
                 text.wx_name = tostring(g.name or loc) .. (g.admin1 and (", " .. g.admin1) or "") .. ((g.country_code and g.country_code ~= "US") and (", " .. g.country_code) or "")
+                text.wx_place = tostring(g.name or loc)
             elseif r and loc == "" and r.success then
                 lat, lon = r.latitude, r.longitude
                 text.wx_name = "Automatic · " .. tostring(r.city or "by your IP")
+                text.wx_place = tostring(r.city or "Here")
             elseif r and loc ~= "" then
                 text.wx_name = "Not found"
                 wx_done(true)              -- nothing to retry (a place that is not there stays not there), but a change made meanwhile is still asked for
@@ -5679,7 +6072,7 @@ do
     else
         pcall(sys.call, "files.write", "weather-config.json", wx_cfg)   -- so there is a file to edit
     end
-    wx_show(wx_read("wx.json"))          -- what was fetched last time, while the new answer is on its way
+    pcall(wx_show, wx_read("wx.json"))   -- what was fetched last time, while the new answer is on its way (protected: an error here, at load, stopped the whole logic)
     text.wx_in = wx_cfg.location
     fact.wx_c = wx_cfg.units == "celsius"
 end
@@ -5704,6 +6097,7 @@ on("wx_units_set", function(i)
 end)
 wx_refresh_now()
 every(1800000, wx_refresh_now)           -- every half hour
+every(120000, function() pcall(wx_sky_tick) end)   -- the sun and the hours move on between fetches
 end
 
 -- ── Settings > Hyprland ───────────────────────────────────────────────────────────────────────────────────────
@@ -5713,7 +6107,7 @@ end
 do
     local LAYOUTS = { "dwindle", "master", "scrolling" }
     local hy = { layout = 3, gaps = 5, round = 10, border = 3, blur = 3, blur_on = true, passes = 1, resize = false, tear = false, anim = true, sens = 0, follow = 1, nat = false, center = 0, colw = 1, single = false }
-    local hy_dirty, hy_waiting = false, false
+    local hy_waiting = false
 
     -- The windows' corners follow the theme: each theme has its own rounding (concentric with the shell's frame: Retro and Cyber are squarer, by the 73 % the drawers take),
     -- and the slider edits the current theme's, which is kept in hy-round.json and comes back when that theme is picked again.
@@ -5848,6 +6242,10 @@ do
     local function hy_changed()
         if on_niri then return niri_changed() end
         hy_show()
+        -- Only on Hyprland, and only once its own values have been read: a change of theme comes here under pleamar-wm too, and `hy` is then still
+        -- the defaults (the scrolling layout, gaps of 5...), which were sent nowhere but SAVED, into ~/.config/hypr, for the next Hyprland login.
+        if not on_hyprland then return end
+        if not hy.ready then return hy_read_again() end
         hy_dirty = true
         run("hyprctl", { "eval", hy_code() }, function() end)
         if hy_waiting then return end
@@ -5888,9 +6286,11 @@ do
             hy.follow = tonumber(vals[11]) or 1
             hy.nat = vals[12] == "true"
             hy.blur_on = vals[13] ~= "false"
+            hy.ready = true
             hy_show()
         end)
     end
+    hy_read_again = hy_read
 
     hy_show()
     hy_read()
@@ -5978,7 +6378,7 @@ do
     -- monitors in the window manager's own order (its `lay.N`), `wm_sel` the one the Layout chips are for.
     local wm_names, wm_sel, wm_names_ok = {}, 1, false
     local function layout_of(name) return (name and wm.lays[name]) or wm.layout end
-    local inp = { ms = 0, ts = 0, nat = false, tap = false, idle = 7, maccel = "adaptive", taccel = "adaptive", dwt = nil }
+    local inp = { ms = 0, ts = 0, nat = false, tap = false, idle = 7, maccel = "adaptive", taccel = "adaptive", dwt = nil, has = {} }   -- (`has`: the lines the file had, or the page changed)
     local wm_waiting, in_waiting = false, false
 
     local function say(line) run("pleamar", { "--say", "wm", line }, function() end) end
@@ -6026,21 +6426,29 @@ do
     -- The room the shell's frame keeps round the bar's monitor, which pleamar-wm keeps the windows out of (its `fr.MONITOR.EDGE`; Hyprland has the
     -- same in `gaps_out`, see `iris_fx.gaps_code`): with the bar on the left, 24 px on the top, right and bottom and 76 on the left, from the edge of
     -- the screen; none on a monitor without the bar, or with the bar on top. The window manager puts its gap on top of whatever is set, so that gap is taken off.
-    local FRAME_ROOM = { top = 24, right = 24, bottom = 24, left = 76 }
-    local FRAME_ROOMS = {
-        left = FRAME_ROOM,
-        right = { top = 24, right = 76, bottom = 24, left = 24 },
-        top = { top = 76, right = 24, bottom = 24, left = 24 },
-        bottom = { top = 24, right = 24, bottom = 76, left = 24 },
-    }
-    local FRAME_SEG = { top = 59, right = 24, bottom = 24, left = 24 }
+    -- The frame's room on each edge: 24 (its 11 and a gap of 13) on the thin sides, the strip (as thick as the Island's bar, 40 * u at the bar's size) and the same 13 on its own.
+    local FRAME_ROOM = { top = 24, right = 24, bottom = 24, left = 67 }
+    local FRAME_ROOMS, FRAME_SEG
+    local function frame_rooms()
+        local bz = bar_fx.size or 1
+        local w = math.floor(1.35 * 40 * bz + 0.5) + 13
+        FRAME_ROOM = { top = 24, right = 24, bottom = 24, left = w }
+        FRAME_ROOMS = {
+            left = FRAME_ROOM,
+            right = { top = 24, right = w, bottom = 24, left = 24 },
+            top = { top = w, right = 24, bottom = 24, left = 24 },
+            bottom = { top = 24, right = 24, bottom = w, left = 24 },
+        }
+        FRAME_SEG = { top = math.floor(1.35 * 36 * bz + 0.5) + 13, right = 24, bottom = 24, left = 24 }
+    end
+    frame_rooms()
     local EDGES = { "top", "right", "bottom", "left" }
     function wm_frame_sync()
-        if on_hyprland then return end
+        if on_hyprland or on_niri then return end   -- (niri has no window-manager scene to ask either)
+        frame_rooms()
         hypr_monitors(30, function(mons)
             if not mons then return end
-            local names = {}
-            for name, id in mons:gmatch("Monitor (%S+) %(ID (%d+)%)") do names[tonumber(id)] = name end
+            local names = mon_names(mons)
             local framed = fact.bar_frame == true and bar_mon.name ~= nil
             local room = FRAME_ROOMS[fact.bar_anchor] or FRAME_ROOM
             if fact.bar_seg == true and fact.bar_anchor == "top" then room = FRAME_SEG end   -- the top frame in pieces: windows start below the pieces, as on Hyprland (`iris_fx.gaps_code`)
@@ -6143,9 +6551,22 @@ do
             local pt = string.format("pointer accel %s speed %.2f", inp.maccel, inp.ms)
             local tp = string.format("touchpad accel %s speed %.2f natural %s tap %s", inp.taccel, inp.ts, onoff(inp.nat), onoff(inp.tap))
             if inp.dwt ~= nil then tp = tp .. " dwt " .. inp.dwt end
-            -- (two passes: `$a` never fires when the last line is one of those just deleted)
-            run("sed", { "-i", "-E", "-e", "/^(pointer|touchpad|idle) /d", path }, function()
-                run("sed", { "-i", "-e", "$a\\" .. pt, "-e", "$a\\" .. tp, "-e", "$a\\idle off-after " .. inp.idle * 60, path }, function() end)
+            -- Only the lines the file had or the page changed: all three were written from the page's defaults, so one toggle put a pointer and a
+            -- touchpad line in a session.conf that had none, over what Hyprland's config gave. (Two passes: `$a` never fires when the last line
+            -- is one of those just deleted.)
+            local kinds, add = {}, {}
+            for _, k in ipairs({ "pointer", "touchpad", "idle" }) do
+                if inp.has[k] then
+                    kinds[#kinds + 1] = k
+                    add[#add + 1] = "-e"
+                    add[#add + 1] = "$a\\" .. (k == "pointer" and pt or k == "touchpad" and tp or ("idle off-after " .. inp.idle * 60))
+                end
+            end
+            if #kinds == 0 then return end
+            run("sed", { "-i", "-E", "-e", "/^(" .. table.concat(kinds, "|") .. ") /d", path }, function()
+                table.insert(add, 1, "-i")
+                add[#add + 1] = path
+                run("sed", add, function() end)
             end)
         end)
     end
@@ -6159,7 +6580,7 @@ do
 
     local function wm_read()
         -- Pleamar-WM answers only when it is the window manager; on Hyprland each of these would start a command to get nothing back.
-        if on_hyprland then return end
+        if on_hyprland or on_niri then return end   -- (niri has no window-manager scene to ask either)
         -- One connection for all of them (`say_many`): a `pleamar --say` program for each of these fifteen made the page stall when it opened.
         local names = { "gap", "ratio", "monname.0", "free.0", "rain", "snow", "bw", "ba", "rad", "shd", "tb", "tbo", "wo_a", "wo_i", "wfr", "wst", "tbt", "vit" }
         local cmds = {}
@@ -6209,6 +6630,7 @@ do
             run("grep", { "-E", "^(pointer|touchpad|idle) ", path }, function(out)
                 for line in (out or ""):gmatch("[^\n]+") do
                     local kind = line:match("^(%S+)")
+                    inp.has[kind] = true
                     local v = {}
                     for k, val in line:gsub("^%S+%s+", ""):gmatch("(%S+)%s+(%S+)") do v[k] = val end
                     if kind == "pointer" then
@@ -6234,7 +6656,7 @@ do
     wm_show()
     -- The saved choices go back into the window manager when this shell starts (it forgets them when it reloads).
     after(3000, function()
-        if on_hyprland then return end
+        if on_hyprland or on_niri then return end   -- (niri has no window-manager scene to ask either)
         local ok, saved = pcall(sys.ask, "files.read", "wm.json", "json")
         wm_restored = true
         if ok and type(saved) == "table" then
@@ -6264,7 +6686,7 @@ do
     -- The scene is read in again when the wallpaper changes the palette (its border takes a colour from it), and that puts every fact back to its
     -- first value: when the gap is not what was chosen, everything chosen is sent again.
     every(5000, function()
-        if on_hyprland then return end
+        if on_hyprland or on_niri then return end   -- (niri has no window-manager scene to ask either)
         wm_get("vit", function(v)
             if v ~= nil and v ~= 1 then wm_send() end
         end)
@@ -6290,8 +6712,8 @@ do
         elseif k == 1 then wm.rain = not wm.rain; wm_changed()
         elseif k == 2 then wm.snow = not wm.snow; wm_changed()
         elseif k == 5 then wm.tbt = not wm.tbt; wm_changed()
-        elseif k == 3 then inp.nat = not inp.nat; in_changed()
-        else inp.tap = not inp.tap; in_changed() end
+        elseif k == 3 then inp.nat = not inp.nat; inp.has.touchpad = true; in_changed()
+        else inp.tap = not inp.tap; inp.has.touchpad = true; in_changed() end
     end)
     local prev_theme_changed = hy_theme_changed
     hy_theme_changed = function(key)
@@ -6325,6 +6747,7 @@ do
         if i == 0 then inp.ms = math.floor((t * 2 - 1) * 20 + 0.5) / 20
         elseif i == 1 then inp.ts = math.floor((t * 2 - 1) * 20 + 0.5) / 20
         else inp.idle = math.floor(1 + t * 29 + 0.5) end
+        inp.has[({ [0] = "pointer", "touchpad" })[i] or "idle"] = true
         in_changed()
     end)
     on("wm_refresh", function() wm_read() end)
@@ -6358,7 +6781,7 @@ end
             local r = S.res[S.start + i]
             if not r then break end
             rows[#rows + 1] = {
-                title = r.title, sub = r.sub or "", desc = r.desc or "", hasdesc = (r.desc or "") ~= "", glyph = r.glyph or (r.title or "?"):sub(1, 1):upper(),
+                title = r.title, sub = r.sub or "", desc = r.desc or "", hasdesc = (r.desc or "") ~= "", glyph = r.glyph or ((r.title or "?"):match("^[%z\1-\127\194-\244][\128-\191]*") or "?"):upper(),   -- (the first letter, not its first byte: "Übersicht" gave half a character)
                 sel = (S.start + i) == S.sel, hasicon = (r.icon or "") ~= "", icon = r.icon or "", deletable = r.del ~= nil,
                 pinnable = r.app ~= nil, pin = r.app ~= nil and cdk_pinned(r.app),
             }
@@ -6663,7 +7086,7 @@ end
         if not ok or type(v) ~= "number" or v ~= v or v == math.huge or v == -math.huge then return nil end
         local str = string.format("%.10g", v)
         return { title = "= " .. str, sub = q .. " · Enter copies", glyph = "=",
-                 run = function() run("wl-copy", { "--", str }, function() end) end }
+                 run = function() run("wl-copy", {}, function() end, { input = str, output = false }) end }
     end
 
     -- A card on the desktop with its own scene: asked how it is, started if it is not running, and shown or put away. (The desktop editor, desktopedit/, says
@@ -6672,7 +7095,7 @@ end
     local function toggle_scene(name)
         run("pleamar", { "--say", name, "get shown" }, function(out, code)
             if code ~= 0 then
-                exec_on_desktop('vitreus-keep "$HOME/.config/pleamar/shells/vitreus/desktopwidgets/desktopwidgets.plm"')
+                exec_on_desktop('vitreus-keep "${XDG_CONFIG_HOME:-$HOME/.config}/pleamar/shells/vitreus/desktopwidgets/desktopwidgets.plm"')
                 after(2500, function() run("pleamar", { "--say", name, "fact shown true" }, function() end) end)
                 return
             end
@@ -6696,7 +7119,7 @@ end
         end
         run("pleamar", { "--say", "desktopnotes", "get shown" }, function(_, code)
             if code ~= 0 then
-                exec_on_desktop('vitreus-keep "$HOME/.config/pleamar/shells/vitreus/desktopnotes/desktopnotes.plm"')
+                exec_on_desktop('vitreus-keep "${XDG_CONFIG_HOME:-$HOME/.config}/pleamar/shells/vitreus/desktopnotes/desktopnotes.plm"')
                 -- Not a fixed wait: ask again until the scene answers (it takes about a second to start), for five seconds at most.
                 local tries = 0
                 local function wait()
@@ -6730,7 +7153,7 @@ end
     end
     -- Each command: title, what it is, what it does, and words that find it besides its title (all searched, spaces ignored).
     local COMMANDS = {
-        { "Settings: Wallpaper", "open", open_settings("pg_wall"), "background picture image folder slideshow desktop" },
+        { "Settings: Wallpaper", "open", open_settings("pg_wall"), "background picture image folder slideshow desktop parallax depth mouse" },
         { "Settings: Glass", "open", open_settings("pg_glass"), "blur transparency frosted liquid look appearance theme" },
         { "Settings: Display", "open", open_settings("pg_disp"), "monitor screen resolution refresh rate scale arrangement vrr position" },
         { "Settings: Idle and sleep", "open", open_settings("pg_idle"), "lock screen off sleep suspend timeout hypridle inactivity minutes" },
@@ -6752,6 +7175,7 @@ end
         { "Workspace overview", "action", function() spawn('pleamar --say vitreus "emit ov_toggle"') end, "workspaces windows switch expose desktops" },
         { "Random wallpaper", "action", function() local f = wp_random_pick(); if f then wp_apply(f) end end, "shuffle background change surprise" },
         { "Lock session", "action", function() spawn('pleamar --say lockscreen "fact locked true"') end, "lockscreen lock screen secure away password" },
+        { "Settings: Style", "open", open_settings("pg_style"), "style pencil sketch boil wobble hand drawn ink clean shading hatching lines look" },
         { "Settings: Theme", "open", open_settings("pg_theme"), "colours colors palette theme glass retro cassette plastic iris accent wallpaper" },
         { "Settings: Keybinds", "open", open_settings("pg_keys"), "keybinds keyboard shortcuts keys hotkeys bindings shortcut super combo remap" },
         { "Settings: Widgets", "open", open_settings("pg_clock"), "widgets clock system monitor audio visualiser visualizer cava desktop clock glass digits time wallpaper layout inline stacked staggered hero position corner size weight tint 12 24 hour" },
@@ -6766,7 +7190,7 @@ end
             -- A card on the desktop (desktopsysmon/) with its own scene: asked how it is, and started if it is not running.
             run("pleamar", { "--say", "desktopsysmon", "get shown" }, function(out, code)
                 if code ~= 0 then
-                    exec_on_desktop('vitreus-keep "$HOME/.config/pleamar/shells/vitreus/desktopwidgets/desktopwidgets.plm"')
+                    exec_on_desktop('vitreus-keep "${XDG_CONFIG_HOME:-$HOME/.config}/pleamar/shells/vitreus/desktopwidgets/desktopwidgets.plm"')
                     after(2500, function() run("pleamar", { "--say", "desktopsysmon", "fact shown true" }, function() end) end)
                     return
                 end
@@ -6853,7 +7277,7 @@ end
             for _, x in ipairs(scored) do
                 local ch = x.e.c
                 out[#out + 1] = { title = x.e.n, sub = x.e.g, glyph = ch,
-                                  run = function() run("wl-copy", { "--", ch }, function() end) end }
+                                  run = function() run("wl-copy", {}, function() end, { input = ch, output = false }) end }
                 if #out >= 80 then break end
             end
             done(out)
@@ -6880,7 +7304,7 @@ end
                         del = function() clip_delete(c) end,
                         run = function()
                             if c.image then return run("vitreus-clipimg", { "copy", c.id }, function() end) end
-                            clip_decode(c, function(o) run("wl-copy", { "--", o or "" }, function() end) end)
+                            clip_decode(c, function(o) run("wl-copy", {}, function() end, { input = o or "", output = false }) end)
                         end }
                     if #out >= 60 then break end
                 end
@@ -6903,7 +7327,9 @@ end
     local function search_files(q, done)
         if #q < 2 then return done({}, "Type two letters to search your files") end
         with_dirs(function(d)
-            run("find", { d.home, "-maxdepth", "5", "(", "-name", ".*", "-prune", ")", "-o", "-iname", "*" .. q .. "*", "-print" },
+            -- (the typed text as plain letters: a `*`, `?` or `[` in it was a pattern to `find`)
+            local glob = q:gsub("[%*%?%[%]\\]", "\\%0")
+            run("find", { d.home, "-maxdepth", "5", "(", "-name", ".*", "-prune", ")", "-o", "-iname", "*" .. glob .. "*", "-print" },
                 function(o)
                     local out = {}
                     for path in (o or ""):gmatch("[^\n]+") do
@@ -6912,9 +7338,11 @@ end
                         out[#out + 1] = { title = name, sub = dir, glyph = "F",
                                           run = function() spawn("xdg-open " .. "'" .. path:gsub("'", "'\\''") .. "'") end,
                                           pv = function(seq) preview_file(path, "FILE", seq) end }
-                        if #out >= 60 then break end
+                        if #out >= 2000 then break end
                     end
+                    -- (sorted, then cut: cut at the first 60 `find` printed, the best short match deeper down was never seen)
                     table.sort(out, function(a, b) return #a.title < #b.title end)
+                    for i = #out, 61, -1 do out[i] = nil end
                     done(out)
                 end)
         end)
@@ -6947,20 +7375,25 @@ end
         add("area", 4046.8564224, "acre acres"); add("area", 0.09290304, "ft2 sqft"); add("area", 0.00064516, "in2 sqin"); add("area", 2589988.11, "mi2 sqmi")
     end
     local function num_str(v)
-        local str = string.format("%.6g", v)
-        return str
+        -- (a whole number as it is, and ten figures for the rest: six figures gave `1e+12` for a terabyte in bytes, and rounded 1234.567 to 1234.57)
+        if v == math.floor(v) and math.abs(v) < 1e15 then return string.format("%.0f", v) end
+        return (string.format("%.10g", v))
     end
     local function to_kelvin(v, u) if u == "c" then return v + 273.15 elseif u == "f" then return (v - 32) * 5 / 9 + 273.15 end return v end
     local function from_kelvin(v, u) if u == "c" then return v - 273.15 elseif u == "f" then return (v - 273.15) * 9 / 5 + 32 end return v end
     local function try_units(q)
-        local s = q:lower():gsub(",", ""):gsub("°", "")
+        -- A comma is a decimal point when it is the only one and is not followed by exactly three digits ("2,5 km"); otherwise it groups
+        -- thousands ("1,500 m") and goes. (It always went, and 2,5 km was read as 25.)
+        local s = q:lower():gsub("°", "")
+        s = s:gsub("(%d+),(%d+)", function(a, b) if #b == 3 then return a .. b end return a .. "." .. b end)
+        s = s:gsub(",", "")
         -- a percentage: "15% of 80"
         local p, of = s:match("^([%d%.]+)%s*%%%s*of%s+([%d%.]+)$")
         if not p then p, of = s:match("^([%d%.]+)%s*percent%s+of%s+([%d%.]+)$") end
         if p and tonumber(p) and tonumber(of) then
             local str = num_str(tonumber(p) * tonumber(of) / 100)
             return { title = "= " .. str, sub = p .. "% of " .. of .. " · Enter copies", glyph = "%",
-                     run = function() run("wl-copy", { "--", str }, function() end) end }
+                     run = function() run("wl-copy", {}, function() end, { input = str, output = false }) end }
         end
         local n, a, b = s:match("^(%-?[%d%.]+)%s*([%a/%d]+)%s+to%s+([%a/%d]+)$")
         if not n then n, a, b = s:match("^(%-?[%d%.]+)%s*([%a/%d]+)%s+in%s+([%a/%d]+)$") end
@@ -6978,7 +7411,7 @@ end
         end
         local str = num_str(out)
         return { title = "= " .. str .. " " .. b, sub = n .. " " .. a .. " → " .. b .. " · Enter copies", glyph = "=",
-                 run = function() run("wl-copy", { "--", str }, function() end) end }
+                 run = function() run("wl-copy", {}, function() end, { input = str, output = false }) end }
     end
 
     -- ── the web ──
@@ -7046,7 +7479,23 @@ end
     end
 
     -- ── open windows ──
+    -- Off Hyprland the windows come from the `window` service, which every compositor with wlr-foreign-toplevel gives (pleamar-wm, niri):
+    -- `hyprctl clients` is Hyprland's, and there the search always said that no window matched.
+    local WL = { list = {} }
+    pcall(sys.watch, "window", function(w) WL.list = (type(w) == "table" and type(w.list) == "table") and w.list or {} end)
     local function window_rows(q, limit, fn)
+        if not on_hyprland then
+            local rows, ql = {}, q:lower()
+            for _, w in ipairs(WL.list) do
+                local class, title = tostring(w.class or ""), tostring(w.title or "")
+                if (class ~= "" or title ~= "") and (ql == "" or (title .. " " .. class):lower():find(ql, 1, true)) and #rows < limit then
+                    local cl, id = class:lower(), w.id
+                    rows[#rows + 1] = { title = title ~= "" and title or class, sub = class, glyph = "W", icon = apps_by_class[cl] or cl,
+                                        run = function() pcall(sys.call, "window.activate", id) end }
+                end
+            end
+            return fn(rows)
+        end
         run("hyprctl", { "clients" }, function(out, code)
             if code ~= 0 or not out then return fn({}) end
             local list = {}
@@ -7094,8 +7543,15 @@ end
             if ok and type(saved) == "table" and (type(saved.snippets) == "table" or type(saved.links) == "table") then
                 SN.data = { snippets = saved.snippets or {}, links = saved.links or {} }
             else
-                SN.data = SN_DEFAULT
-                pcall(sys.call, "files.write", "snippets.json", SN_DEFAULT)
+                -- The defaults are written only where there is no file. One that does not parse (a comma missing after editing it) is the
+                -- person's snippets: it is left alone, and asked again next time, so mending it is enough.
+                local there, is = pcall(sys.ask, "files.exists", "snippets.json")
+                if there and is == false then
+                    SN.data = SN_DEFAULT
+                    pcall(sys.call, "files.write", "snippets.json", SN_DEFAULT)
+                else
+                    return fn(SN_DEFAULT)
+                end
             end
             fn(SN.data)
         end)
@@ -7121,7 +7577,8 @@ end
             local kw, rest = q:match("^(%S+)%s+(.+)$")
             for _, l in ipairs(data.links or {}) do
                 if kw and l.keyword and kw:lower() == l.keyword:lower() and l.url then
-                    out[#out + 1] = { title = (l.name or l.keyword) .. ": " .. rest, sub = "Enter opens it", glyph = "$", run = open_url((l.url:gsub("{query}", urlenc(rest)))) }
+                    -- (the replacement as a function: in a replacement string `%20` is a capture, and every query with a space in it was an error)
+                    out[#out + 1] = { title = (l.name or l.keyword) .. ": " .. rest, sub = "Enter opens it", glyph = "$", run = open_url((l.url:gsub("{query}", function() return urlenc(rest) end))) }
                 end
             end
             local ql = q:lower()
@@ -7129,7 +7586,7 @@ end
                 local name, body = sn.name or "", sn.text or ""
                 if ql == "" or name:lower():find(ql, 1, true) or body:lower():find(ql, 1, true) then
                     out[#out + 1] = { title = name, sub = (body:gsub("%s+", " ")):sub(1, 70) .. "  ·  Enter copies", glyph = "$",
-                                      run = function() expand(body, function(t) run("wl-copy", { "--", t }, function() end) end) end }
+                                      run = function() expand(body, function(t) run("wl-copy", {}, function() end, { input = t, output = false }) end) end }
                 end
             end
             for _, l in ipairs(data.links or {}) do
@@ -7138,7 +7595,7 @@ end
                                       run = function() text.lq = "$" .. (l.keyword or "") .. " "; focus("lq"); return true end }
                 end
             end
-            out[#out + 1] = { title = "Edit snippets…", sub = SN.path or "snippets.json", glyph = "+", run = function() if SN.path then spawn("xdg-open '" .. SN.path .. "'") end end }
+            out[#out + 1] = { title = "Edit snippets…", sub = SN.path or "snippets.json", glyph = "+", run = function() if SN.path then SN.data = nil; spawn("xdg-open '" .. SN.path:gsub("'", "'\\''") .. "'") end end }
             done(out)
         end)
     end
@@ -7186,7 +7643,11 @@ end
             .. 'if [ "$ec" -eq 0 ]; then notify-send -a Vitreus "$pkg installed"; else notify-send -a Vitreus "$pkg install failed (exit $ec)"; fi; '
             .. 'echo; printf "Press Enter to close… "; read _x; exit "$ec"'
         local args = "_ " .. PK.tool .. " " .. r.name
-        spawn('t=$(command -v kitty foot alacritty ghostty konsole xterm | head -n1); [ -n "$t" ] || exit 1; case "$t" in *kitty) "$t" sh -c \'' .. inner .. '\' ' .. args
+        -- (the desktop's own choice first, xdg-terminal-exec; and with no terminal at all it says so: the launcher closed and nothing happened)
+        spawn('t=$(command -v xdg-terminal-exec kitty foot alacritty ghostty wezterm konsole gnome-terminal xterm | head -n1); '
+            .. '[ -n "$t" ] || { notify-send -a Vitreus "No terminal to install in" "Install a terminal (kitty, foot, alacritty…) to install packages from here"; exit 1; }; '
+            .. 'case "$t" in *xdg-terminal-exec|*kitty) "$t" sh -c \'' .. inner .. '\' ' .. args
+            .. ' ;; *gnome-terminal) "$t" -- sh -c \'' .. inner .. '\' ' .. args
             .. ' ;; *) "$t" -e sh -c \'' .. inner .. '\' ' .. args .. ' ;; esac')
     end
     local function search_packages(q, seq, done)
@@ -7199,7 +7660,7 @@ end
             pk_tool(function(tool)
                 if seq ~= S.seq then return end
                 if tool == "none" then return done({}, "pacman was not found: Packages is for Arch and its relatives") end
-                run(tool, { "--color=never", "-Ss", q }, function(out)
+                run(tool, { "--color=never", "-Ss", q }, function(out)   -- (in English, below: `[installed]` is a translated word)
                     if seq ~= S.seq then return end
                     local lines, rows = {}, {}
                     for l in (out or ""):gmatch("[^\n]+") do lines[#lines + 1] = l end
@@ -7218,7 +7679,7 @@ end
                                         glyph = r.installed and "✓" or "+", run = function() return pk_install(r) end }
                     end
                     done(out_rows, "No package matches")
-                end)
+                end, { env = { LC_ALL = "C" } })
             end)
         end)
     end
@@ -7438,7 +7899,11 @@ require("logic/gpu")(with_dirs)
 
 -- panels from a key, on the focused monitor: see logic/panel_monitor.luau
 snd_hook = {}   -- filled by the panel sound below (the key bind sets desk_open from the logic, which fires no fact handler)
-require("logic/panel_monitor")()
+here_toggle = require("logic/panel_monitor")()   -- a global: the wallpaper picker's toggle (further down) opens it on the focused monitor too
+-- The dashboard too: the shared fact alone opened it on every screen.
+on("dash_toggle", function()
+    here_toggle(function() return fact.dash_open == true end, function(v) fact.dash_open = v end)
+end)
 
 -- bar position: see logic/bar_position.luau
 require("logic/bar_position")()
@@ -7449,9 +7914,13 @@ require("logic/desk_holes")()
 require("logic/bar_size")()
 -- the Island moving to the music (Settings > Bar): see logic/bar_beat.luau
 require("logic/bar_beat")()
+-- the bulge under the pointer (Settings > Bar): see logic/bar_bulge.luau
+require("logic/bar_bulge")()
 
 -- bar layout: see logic/bar_layout.luau
 require("logic/bar_layout")()
+-- how the shell's pencil is drawn (Settings > Style): see logic/pencil_style.luau
+require("logic/pencil_style")()
 -- the workspace marks' look and options (Settings > Bar > Workspaces), and the Apps look's icons: see logic/ws_marks.luau
 require("logic/ws_marks")({
     icon_for = function(class) return apps_by_class[class] or class end,
@@ -7497,7 +7966,10 @@ do
     local addons = require("logic/addons")()
     require("logic/theme_widgets")({
         theme = function() if not vtheme.loaded then return nil end local t = vtheme.current(); return t.id, t.name end,
-        start = function(dir) exec_on_desktop('vitreus-keep "$HOME/.config/pleamar/shells/vitreus/' .. dir .. '/' .. dir .. '.plm"') end,
+        start = function(dir)
+            if dir == "desktopclock" or dir == "desktopsysmon" then dir = "desktopwidgets" end      -- (the clock and the system monitor run in desktopwidgets/)
+            exec_on_desktop('vitreus-keep "${XDG_CONFIG_HOME:-$HOME/.config}/pleamar/shells/vitreus/' .. dir .. '/' .. dir .. '.plm"')
+        end,
         addons = addons.widgets,
     })
 end
@@ -7729,7 +8201,20 @@ require("logic/keybinds")()
 
     -- Start once the wallpaper folder has been read: what is already known is used at once, the rest is made.
     local function start()
-        if G.started or #wp_files == 0 then return end
+        -- Built already: the folder was listed again (a Wallhaven download, a picture dropped in, another folder chosen). What is new is made and
+        -- the tray laid out again. (It returned here, and a new wallpaper had no hexagon until the shell restarted.)
+        if G.started then
+            if not (G.dir and G.laid) or G.busy > 0 or #G.queue > 0 then return end
+            local missing = 0
+            for _, f in ipairs(wp_files) do
+                if not (G.data[f] and G.have[name_of(f)]) then G.data[f] = nil; G.queue[#G.queue + 1] = f; missing = missing + 1 end
+            end
+            if missing == 0 then return build() end
+            G.total = missing
+            text.wp_picker_status = string.format("Reading your wallpapers…  0 of %d", missing)
+            return pump()
+        end
+        if #wp_files == 0 then return end
         G.started = true
         with_dirs(function(d)
             G.dir = d.cache .. "/wp_picker"
@@ -7947,12 +8432,20 @@ require("logic/keybinds")()
             if not f or f == wp_prev.shown then return end
             wp_prev.on, wp_prev.shown = true, f
             -- A video in use plays over awww's picture (mpvpaper), so nothing tried through awww could be seen: it is stopped for as long as the cards are in use (put
-            -- back, or the kept one started, when the picker closes). A video card is tried as its poster, a still frame of it.
-            if wpv.cur and not wp_prev.stopped then
+            -- back, or the kept one started, when the picker closes). A video card is tried as its poster, a still frame of it, and then plays over it once awww has
+            -- it (stopped again when the focus moves on to a picture).
+            if not wpv.is(f) and (C.vid or (wpv.cur and not wp_prev.stopped)) then
+                C.vid = nil
                 wp_prev.stopped = true
                 exec_on_desktop("pkill -9 -x mpvpaper")
             end
-            wp_apply(f, { "--transition-type", "fade", "--transition-duration", "0.35", "--transition-fps", "60" }, nil, nil, true)
+            wp_apply(f, { "--transition-type", "fade", "--transition-duration", "0.35", "--transition-fps", "60" }, function()
+                if t ~= C.tok or not fact.wp_picker_open or not wpv.is(f) then return end
+                C.vid = f
+                wp_prev.stopped = true
+                exec_on_desktop("pkill -9 -x mpvpaper; exec mpvpaper -vs -o 'input-terminal=no loop-file=inf no-audio panscan=1.0 video-unscaled=no hwdec=auto-safe' '*' '"
+                    .. f:gsub("'", "'\\''") .. "' < /dev/null > /dev/null 2>&1")
+            end, nil, true)
         end)
     end
     local function card_set(i)
@@ -7967,13 +8460,14 @@ require("logic/keybinds")()
         card_publish()
         card_preview()
     end
-    -- Which page it was left on (the hexagons or the cards) is where it opens next time, and the time after a restart.
+    -- Which page it was left on (the cards or the hexagons) is where it opens next time, and the time after a restart. The cards are the first page
+    -- and the default: only a saved `view = "hexagons"` opens it on the hexagons (the older `page` key, from when the hexagons came first, is ignored).
     do
         local ok, saved = pcall(sys.ask, "files.read", "wallpaper-view.json", "json")
-        if ok and type(saved) == "table" and saved.page == 1 then fact.wp_pg = 1 end
+        fact.wp_pg = (ok and type(saved) == "table" and saved.view == "hexagons") and 0 or 1
     end
     on("fact:wp_pg", function(v)
-        pcall(sys.call, "files.write", "wallpaper-view.json", { page = (tonumber(v) or 0) > 0.5 and 1 or 0 })
+        pcall(sys.call, "files.write", "wallpaper-view.json", { view = (tonumber(v) or 0) > 0.5 and "cards" or "hexagons" })
     end)
     -- A swatch pressed (the handler on the wallpaper page sets the filter; this one runs a moment after it): the cards narrow to that colour, keeping the focus where it
     -- is if that one is still among them. Nothing is tried on the desktop for it.
@@ -7994,6 +8488,7 @@ require("logic/keybinds")()
     local function cards_open()
         wp_prev.orig, wp_prev.shown, wp_prev.on, wp_prev.touched, wp_prev.cancel, wp_prev.stopped = wp_cur, nil, false, false, false, false
         C.closing = false
+        C.opened = (C.opened or 0) + 1
         card_list()
         C.sel = 0
         for i, f in ipairs(C.list or {}) do if f == wp_cur then C.sel = i - 1 break end end
@@ -8019,6 +8514,8 @@ require("logic/keybinds")()
             -- Not quiet even for putting the old one back: that starts its video again if it was one (the colours are not worked out twice: it is the one they were
             -- worked out for, and `iris_last_wp` still says so).
             if target then
+                if C.vid and C.vid == target then wpv.keep = target end      -- the try playing now is the one kept: it goes on playing
+                C.vid = nil
                 wp_apply(target, { "--transition-type", "fade", "--transition-duration", "0.35", "--transition-fps", "60" }, done, nil, false)
             else
                 done()
@@ -8039,7 +8536,10 @@ require("logic/keybinds")()
         C.closing = true
         C.rip = (C.rip or 0) + 1                -- (counted here: a fact the logic has not set may not read back)
         fact.wp_card_rip = C.rip
+        local opened = C.opened
         after(760, function()
+            -- (the picker shut and opened again meanwhile: this ripple was for the one before, and closing now shut the new one)
+            if C.opened ~= opened then return end
             C.closing = false
             if not fact.wp_picker_open then return end
             fact.wp_picker_open = false
@@ -8054,11 +8554,14 @@ require("logic/keybinds")()
     on("wp_card_pick", function() card_done(false) end)
     on("wp_card_cancel", function() card_done(true) end)
 
+    -- Opened on the focused monitor only, like the panels (`panel_scr`, logic/panel_monitor.luau): the shared fact alone opened it on every screen.
     on("wp_picker_toggle", function()
-        local opening = not fact.wp_picker_open
-        if opening then fact.wp_picker_leaving = false; set_panel("none"); if G.laid then build() end end
-        fact.wp_picker_open = opening
-        if opening then cards_open() else cards_close() end          -- after the fact: the thumbnails are only made while the picker is open; and a close from here (Super+B) is not seen by the fact's handler
+        local function go(opening)
+            if opening then fact.wp_picker_leaving = false; set_panel("none"); if G.laid then build() end end
+            fact.wp_picker_open = opening
+            if opening then cards_open() else cards_close() end          -- after the fact: the thumbnails are only made while the picker is open; and a close from here (Super+B) is not seen by the fact's handler
+        end
+        if here_toggle then here_toggle(function() return fact.wp_picker_open == true end, go) else go(not fact.wp_picker_open) end
     end)
 
     -- A hexagon was pressed: its wallpaper blooms out of it. `wp_picker_px`, `wp_picker_py` are where it is on the screen, from the
@@ -8113,6 +8616,7 @@ end)()
     local TH = {}                            -- the service's windows, in its order: { id, title, app, picture, stale }
     local TH_sig = ""
     local clients = {}                       -- the windows as last read from `hyprctl clients`; a move edits this at once, so its card does not wait for Hyprland
+    local mv_gen = 0                         -- which drop `moving` is for
     local moving = false                     -- a window was dropped on another workspace and Hyprland has not caught up: do not read the old place back yet
     local front_ids = {}                     -- the service ids of the windows on the workspace in front
     local last_open = false                  -- what `set_open` last did
@@ -8223,7 +8727,8 @@ end)()
             -- Something that hides the desktop behind an empty workspace and gives it back (a full-screen launcher opened and shut, again
             -- and again) brought you back here each time, and each time every window was copied again for a second and a half.
             local sig = table.concat(front_ids, ",")
-            if sig == last_front.sig and os.time() - last_front.at < 60 then return end
+            -- Still let go: an earlier ask's let-go was cancelled by this one (want_gen), so whatever it still holds is let go here.
+            if sig == last_front.sig and os.time() - last_front.at < 60 then return sys.call("thumbnails.want") end
             last_front = { sig = sig, at = os.time() }
             THUMB_UNTIL = os.time() + math.ceil(ms / 1000) + 4           -- these captures are ours: the screen-sharing light ignores them
             sys.call("thumbnails.want", front_ids)
@@ -8259,7 +8764,10 @@ end)()
     end)
     after(4000, function() want_front(2000) end)
     on("ov_toggle", function()
-        if not on_hyprland then                     -- pleamar-wm has its own overview (Super+Tab): the button and the launcher toggle that one
+        -- niri has an overview of its own, and pleamar-wm too (Super+Tab): the button and the launcher toggle that one. (niri was taken for
+        -- pleamar-wm, and the order went to a window-manager scene that is not there.)
+        if on_niri then run("niri", { "msg", "action", "toggle-overview" }, function() end) return end
+        if not on_hyprland then
             wm_get("overview", function(v) wm_say("fact overview " .. (v == 1 and "false" or "true")) end)
             return
         end
@@ -8283,15 +8791,18 @@ end)()
         if not addr or ws < 1 or ws > 5 then return end
         -- The card goes to its new workspace now, and what Hyprland says is not read back until it has done it (otherwise the card shows on the old
         -- workspace again for a moment, until the next read).
+        -- (which move this is: two drops within a second and a half, and the first one's timers let go of `moving` while the second was on its way)
+        mv_gen = mv_gen + 1
+        local mine = mv_gen
         moving = true
         for _, w in ipairs(clients) do
             if w.addr == addr then w.workspace = tostring(ws) end
         end
         render()
         run("hyprctl", { "dispatch", string.format('hl.dsp.window.move({ workspace = %d, follow = false, window = "address:0x%s" })', ws, addr) }, function()
-            after(250, function() moving = false; refresh() end)
+            after(250, function() if mine == mv_gen then moving = false; refresh() end end)
         end)
-        after(1500, function() moving = false end)         -- whatever happens, the overview does not stay frozen
+        after(1500, function() if mine == mv_gen then moving = false end end)         -- whatever happens, the overview does not stay frozen
     end)
     on("ov_focus", function(n)
         local addr = addrs[n + 1]
@@ -8549,6 +9060,8 @@ require("logic/clock")()
     local working = false
     local arm = nil
     local want_ip = nil
+    -- NordVPN: its own CLI and daemon (NordLynx), not NetworkManager, so it is a card of its own (`vpn_nord` shows it once `nordvpn` is found).
+    local nord = { have = false, on = false, country = "", city = "", host = "", ip = "", tech = "" }
 
     run("printenv", { "HOME" }, function(out) home = ((out or ""):gsub("%s+$", "")) end)
 
@@ -8601,6 +9114,14 @@ require("logic/clock")()
             text.vpn_title = "Not connected"
             text.vpn_sub = #profs == 0 and "No profiles yet: add one below" or "Pick a profile to connect"
         end
+        if nord.on and active then           -- both at once: the card names both, and its Disconnect ends both (`vpn_down`)
+            text.vpn_title = "NordVPN + " .. active.name
+            text.vpn_sub = "Two VPNs connected: Disconnect ends both"
+        elseif nord.on then
+            fact.vpn_on = true
+            text.vpn_title = "NordVPN"
+            text.vpn_sub = nord.country .. (nord.ip ~= "" and (" · " .. nord.ip) or "")
+        end
         for i = 0, MAX - 1 do
             local p = profs[i + 1]
             fact["vpn_r." .. i .. ".on"] = p ~= nil
@@ -8639,7 +9160,94 @@ require("logic/clock")()
         end)
     end
 
+    -- ── NordVPN ───────────────────────────────────────────────────────────────────────────────────────────
+    -- `nordvpn status` / `connect [country or city]` / `disconnect`. Its output draws a spinner with carriage returns: each line is taken
+    -- after its last \r. Its errors come on stdout, so the last line it printed is what is said when it fails.
+    local function nord_lines(out)
+        local lines = {}
+        for raw in ((out or ""):gsub("\27%[[%d;]*%a", "") .. "\n"):gmatch("([^\n]*)\n") do
+            local l = trim(raw:match("([^\r]*)$") or raw)
+            if l ~= "" and not l:match("^[%-\\|/]+$") then lines[#lines + 1] = l end
+        end
+        return lines
+    end
+    local function nord_render()
+        fact.vpn_nord = nord.have
+        fact.vpn_nd_on = nord.on
+        if not nord.have then return end
+        if nord.on then
+            text.vpn_nd_title = nord.country .. (nord.city ~= "" and (", " .. nord.city) or "")
+            text.vpn_nd_sub = nord.host .. (nord.ip ~= "" and (" · " .. nord.ip) or "")
+        elseif nord.err then
+            text.vpn_nd_title = "Not ready"
+            text.vpn_nd_sub = nord.err
+        else
+            text.vpn_nd_title = "Disconnected"
+            text.vpn_nd_sub = "Quick connect picks the fastest server; or type a country or city"
+        end
+        text.vpn_nd_note = nord.tech
+    end
+    local function nord_refresh()
+        -- Only where NordVPN is installed: a command that is not there still answers with text, so it is looked for first.
+        run("which", { "nordvpn" }, function(_, found)
+        if found ~= 0 then nord.have = false; nord.on = false; nord_render(); render(); return end
+        run("nordvpn", { "status" }, function(out, code)
+            if code ~= 0 and (out or "") == "" then nord.have = false; nord.on = false; nord_render(); render(); return end
+            nord.have = true
+            local f = {}
+            for _, l in ipairs(nord_lines(out)) do
+                local k, v = l:match("^([%w%s%-]+):%s*(.*)$")
+                if k then f[k:lower()] = v end
+            end
+            local all = table.concat(nord_lines(out), " "):lower()
+            nord.err = nil
+            if all:match("permission denied") then nord.err = "Permission denied: log out and in again (the nordvpn group)"
+            elseif all:match("not logged in") then nord.err = "Not logged in: run `nordvpn login` in a terminal" end
+            nord.on = (f["status"] or ""):lower() == "connected"
+            nord.country, nord.city = f["country"] or "", f["city"] or ""
+            nord.host, nord.ip = f["hostname"] or "", f["ip"] or ""
+            local t = (f["current technology"] or f["current protocol"] or ""):upper()          -- (newer CLIs call it the protocol)
+            if t ~= "" then nord.tech = t == "NORDLYNX" and "NordLynx" or t end
+            nord_render()
+            render()
+        end)
+        end)
+    end
+    local function nord_run(args, label, after_fn)        -- `after_fn`: run once it has finished (the status card's Disconnect, with a profile up too)
+        if working then return end
+        set_working(true)
+        say(label)
+        run("nordvpn", args, function(out, code)
+            set_working(false)
+            local lines = nord_lines(out)
+            local last = lines[#lines] or ""
+            if code ~= 0 then say("NordVPN: " .. (last ~= "" and last or ("failed with code " .. tostring(code))))
+            elseif args[1] == "connect" then say(last ~= "" and last or "Connected.")
+            else say("") end
+            nord_refresh()
+            if after_fn then after_fn() end
+        end)
+    end
+    local function nord_go()
+        local q = trim(text.vpn_nd_q)
+        if q == "" then nord_run({ "connect" }, "Connecting NordVPN to the fastest server…") return end
+        nord_run({ "connect", (q:gsub("%s+", "_")) }, "Connecting NordVPN to " .. q .. "…")
+    end
+    on("vpn_nd_quick", function() nord_run({ "connect" }, "Connecting NordVPN to the fastest server…") end)
+    on("vpn_nd_go", nord_go)
+    on("submit:vpn_nd_q", nord_go)
+    on("vpn_nd_down", function() nord_run({ "disconnect" }, "Disconnecting NordVPN…") end)
+    -- what technology it uses, once (`nordvpn settings`), for the card's corner while it is not connected
+    run("nordvpn", { "settings" }, function(out)
+        for _, l in ipairs(nord_lines(out)) do
+            local t = l:match("^Technology:%s*(%S+)") or l:match("^Protocol:%s*(%S+)")
+            if t then nord.tech = t:upper() == "NORDLYNX" and "NordLynx" or t end
+        end
+        if nord.have then nord_render() end
+    end)
+
     local function refresh()
+        nord_refresh()
         nm({ "-t", "-f", "NAME,UUID,TYPE,ACTIVE", "connection", "show" }, function(out, code)
             if code ~= 0 then
                 profs = {}
@@ -8687,7 +9295,10 @@ require("logic/clock")()
     end
     on("vpn_toggle", toggle)
     on("vpn_down", function()
-        for i, p in ipairs(profs) do if p.active then return toggle(i - 1) end end
+        local up
+        for i, p in ipairs(profs) do if p.active then up = i - 1; break end end
+        if nord.on then nord_run({ "disconnect" }, "Disconnecting NordVPN…", up and function() toggle(up) end) return end
+        if up then return toggle(up) end
     end)
 
     on("vpn_arm_ask", function(i)
@@ -8812,12 +9423,24 @@ require("logic/clock")()
         if fact.vpn_tcp then data[#data + 1] = "proto-tcp=yes" end
         if ca ~= "" then data[#data + 1] = "ca=" .. ca end
         local args = { "connection", "add", "type", "vpn", "vpn-type", "openvpn", "con-name", name, "ifname", "--", "vpn.data", table.concat(data, ", ") }
-        if pw ~= "" then args[#args + 1] = "vpn.secrets"; args[#args + 1] = "password=" .. pw end
         set_working(true)
         say("Adding " .. name .. "…")
         nm(args, function(out, code)
-            if code == 0 then for _, k in ipairs({ "vpno_name", "vpno_server", "vpno_port", "vpno_user", "vpno_pw", "vpno_ca" }) do text[k] = "" end end
-            added(out, code, name, nil)
+            local function over(o, c)
+                if c == 0 then for _, k in ipairs({ "vpno_name", "vpno_server", "vpno_port", "vpno_user", "vpno_pw", "vpno_ca" }) do text[k] = "" end end
+                added(o, c, name, nil)
+            end
+            local uuid = code == 0 and (out or ""):match("%(([%x%-]+)%)") or nil
+            if pw == "" or not uuid then return over(out, code) end
+            -- The password goes to nmcli on its input, never as an argument (`vpn.secrets password=…` on the command line could be read by
+            -- anyone on the machine for as long as nmcli ran).
+            run("nmcli", { "connection", "edit", "uuid", uuid }, function(o2, c2)
+                if c2 ~= 0 then
+                    set_working(false)
+                    return say("Added " .. name .. ", but its password could not be saved: it will be asked for when connecting.")
+                end
+                over(out, code)
+            end, { input = "set vpn.secrets password=" .. pw:gsub("[\r\n]", "") .. "\nsave persistent\nquit\n", errors = true })
         end)
     end)
 
@@ -9024,7 +9647,7 @@ do
     local ok, saved = pcall(sys.ask, "files.read", file, "json")
     if ok and type(saved) == "table" and type(saved.panel) == "boolean" then snd_on = saved.panel end
     fact.snd_on = snd_on
-    run("printenv", { "HOME" }, function(out) home = (out or ""):gsub("%s+$", "") end)
+    with_dirs(function(d) home = d.conf end)       -- (the shell's own folder, wherever XDG_CONFIG_HOME puts it: it was always ~/.config)
     on("snd_toggle", function()
         snd_on = not snd_on
         fact.snd_on = snd_on
@@ -9035,7 +9658,8 @@ do
         local now = os.clock()
         if now - last_at < 0.25 then return end   -- one sound at a time, however fast the panels change
         last_at = now
-        run("pw-play", { "--volume", "0.25", home .. "/.config/pleamar/shells/vitreus/assets/panel.wav" }, function() end)
+        -- (`timeout`: with PipeWire up but nothing to route it, pw-play waits for ever, and every panel left one more of them behind)
+        run("timeout", { "15", "pw-play", "--volume", "0.25", home .. "/assets/panel.wav" }, function() end)
     end
     snd_hook.chime = chime
     local quiet = { none = true, volume = true, notif = true }
